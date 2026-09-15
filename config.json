@@ -1,0 +1,43 @@
+{
+    "name": "Automated Data Import Framework",
+    "description": "The Automated Data Import Framework (hereafter referred to as ADIF), is an expansible and generalized wrapper for API accessible data sources, as well as a docker setup that should make setting flatfiles up as API sources a breeze.",
+    "namespace": "UKModules\\ADIF",
+    "framework-version": 15,
+    "authors": [
+        {
+            "name": "Noah Perry",
+            "email": "noah.perry@uky.edu",
+            "institution": "University of Kentucky CCTS"
+        }
+    ],
+    "system-settings": [],
+    "project-settings": [
+        {
+            "key": "api-sources",
+            "name": "Input the base URLs of any APIs which you would like to make available to your project.",
+            "type": "descriptive",
+            "repeatable": true,
+            "sub_settings": [
+                {
+                    "key": "api",
+                    "name": "URL",
+                    "type": "text"
+                },
+                {
+                    "key": "standard",
+                    "name": "Does your API adhere to a common standard?",
+                    "type": "dropdown",
+                    "choices": [
+                        {"name": "OpenAPI", "value": "open-api"},
+                        {"name": "Custom/Other", "value":  "other"}
+                    ]
+                },
+                {
+                    "key": "standard_other",
+                    "name": "Please provide the API schema.",
+                    "type": "json"
+                }
+            ]
+        }
+    ]
+}
