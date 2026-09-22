@@ -8,6 +8,7 @@ use REDCap;
 
 class ADIF extends AbstractExternalModule
 {
+    use Proxy;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -35,24 +36,6 @@ class ADIF extends AbstractExternalModule
         echo '<script src="' . $this->getUrl($path) . '"></script>';
     }
 
-    // This function needs more updates before it is finished.
-    private static function isSyncDashboardPage()
-    {
-        $page = isset($_SERVER['PHP_SELF']) ? $_SERVER['PHP_SELF'] : "";
-        if (preg_match("/ExternalModules\/\??prefix=REDCap-OnCore-CrossReference&page=pages%2FSyncDashboard/", $_SERVER['REQUEST_URI'])) {
-            return TRUE;
-        }
-        return FALSE;
-    }
-
-    private static function isDemographicsPage()
-    {
-        if ($_GET['page'] === 'demographics') {
-            return TRUE;
-        }
-        return FALSE;
-    }
-
     private static function isInstrumentPage($instrument)
     {
         if ($_GET['page'] === $instrument) {
@@ -73,7 +56,7 @@ class ADIF extends AbstractExternalModule
     private static function isFieldMappingPage()
     {
         $page = isset($_SERVER['PHP_SELF']) ? $_SERVER['PHP_SELF'] : "";
-        if (preg_match("/ExternalModules\/\??prefix=REDCap-OnCore-CrossReference&page=pages%2FFieldMapping/", $_SERVER['REQUEST_URI'])) {
+        if (preg_match("/ExternalModules\/\??prefix=ADIF&page=pages%2FMapping/", $_SERVER['REQUEST_URI'])) {
             return TRUE;
         }
         return FALSE;

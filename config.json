@@ -11,6 +11,17 @@
         }
     ],
     "system-settings": [],
+    "links": {
+        "project": [
+            {
+                "name": "ADIF: API Test",
+                "icon": "gear",
+                "url": "pages/API_Test.php",
+                "show-header": true,
+                "show-user-setting": "show-api-test-page"
+            }
+        ]
+    },
     "project-settings": [
         {
             "key": "api-sources",
@@ -24,20 +35,21 @@
                     "type": "text"
                 },
                 {
-                    "key": "standard",
-                    "name": "Does your API adhere to a common standard?",
-                    "type": "dropdown",
-                    "choices": [
-                        {"name": "OpenAPI", "value": "open-api"},
-                        {"name": "Custom/Other", "value":  "other"}
-                    ]
-                },
-                {
-                    "key": "standard_other",
+                    "key": "schema",
                     "name": "Please provide the API schema.",
                     "type": "json"
+                },
+                {
+                    "key": "api-key",
+                    "name": "If this source needs an API key, input it here.",
+                    "type": "password"
                 }
             ]
+        },
+        {
+            "key": "show-api-test-page",
+            "name": "Show the API Test page in the project menu?",
+            "type": "checkbox"
         }
     ]
 }

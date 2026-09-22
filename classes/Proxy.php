@@ -9,90 +9,156 @@ use REDCap;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\RequestException;
 
-class Proxy
+// Mixed into UKModules\ADIF\ADIF (an AbstractExternalModule), so $this has access to
+// getProjectSetting() and the rest of the External Modules framework at runtime.
+trait Proxy
 {
+    // The "api-sources" project setting is a repeatable group (see config.json), so each
+    // sub-setting (api, schema, api-key) comes back from getProjectSetting() as an array,
+    // one entry per configured source, rather than a single scalar value.
+
+    // Returns every configured API source as ['index' => ..., 'url' => ..., 'schema' => ...].
+    // The api-key is intentionally left out since this is meant to be safe to hand to the frontend.
+    public function getApiSources()
+    {
+        $urls = $this->getProjectSetting('api') ?: [];
+        $schemas = $this->getProjectSetting('schema') ?: [];
+
+        $sources = [];
+        foreach ($urls as $index => $url) {
+            if (empty(trim((string) $url))) {
+                continue;
+            }
+            $sources[] = [
+                'index' => $index,
+                'url' => trim($url),
+                'schema' => $schemas[$index] ?? null,
+            ];
+        }
+
+        return $sources;
+    }
+
+    // Pulls the configured API source at $sourceIndex out of the repeatable "api-sources" group.
+    // Returns ['url' => ..., 'apiKey' => ..., 'schema' => ...]
+    protected function getApiSource($sourceIndex)
+    {
+        $urls = $this->getProjectSetting('api') ?: [];
+        $apiKeys = $this->getProjectSetting('api-key') ?: [];
+        $schemas = $this->getProjectSetting('schema') ?: [];
+
+        if (!array_key_exists($sourceIndex, $urls) || empty(trim((string) $urls[$sourceIndex]))) {
+            throw new \Exception("No API source is configured at index \"$sourceIndex\".");
+        }
+
+        return [
+            'url' => trim($urls[$sourceIndex]),
+            'apiKey' => trim((string) ($apiKeys[$sourceIndex] ?? '')),
+            'schema' => $schemas[$sourceIndex] ?? null,
+        ];
+    }
+
+    // Sends a request to a configured API source and returns everything about the exchange
+    // (status, headers, timing, raw + decoded body) instead of emitting it, so callers can either
+    // echo it straight through (see proxyRequest) or render it (see pages/API_Test.php).
+    public function dispatchApiRequest($sourceIndex, $apiPath, $method = 'GET', $payload = [])
+    {
+        $source = $this->getApiSource($sourceIndex);
+        $apiUrl = rtrim($source['url'], '/') . '/' . ltrim($apiPath, '/');
+        $method = strtoupper($method);
+
+        //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
+        $client = new Client(['verify' => false]);
+
+        $headers = [
+            'Accept' => 'application/json'
+        ];
+
+        // Sources configured without an API key are called unauthenticated
+        if (!empty($source['apiKey'])) {
+            $headers['Authorization'] = "Bearer {$source['apiKey']}";
+        }
+
+        $requestOptions = [
+            'headers' => $headers
+        ];
+
+        // Add payload if it's a POST/PUT/PATCH request
+        if (!empty($payload) && in_array($method, ['POST', 'PUT', 'PATCH'])) {
+            $requestOptions['json'] = $payload; // Guzzle handles JSON encoding and headers
+        }
+
+        $result = [
+            'requestUrl' => $apiUrl,
+            'requestMethod' => $method,
+            'requestHeaders' => $headers,
+            'success' => false,
+            'statusCode' => null,
+            'reasonPhrase' => null,
+            'responseHeaders' => [],
+            'body' => null,
+            'bodyJson' => null,
+            'elapsedMs' => null,
+            'byteSize' => null,
+            'error' => null,
+        ];
+
+        $start = microtime(true);
+
+        try {
+            $response = $client->request($method, $apiUrl, $requestOptions);
+            $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
+
+            $body = $response->getBody()->getContents();
+            $decoded = json_decode($body, true);
+
+            $result['success'] = true;
+            $result['statusCode'] = $response->getStatusCode();
+            $result['reasonPhrase'] = $response->getReasonPhrase();
+            $result['responseHeaders'] = $response->getHeaders();
+            $result['body'] = $body;
+            $result['bodyJson'] = (json_last_error() === JSON_ERROR_NONE) ? $decoded : null;
+            $result['byteSize'] = strlen($body);
+        } catch (RequestException $e) {
+            $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
+            $result['error'] = $e->getMessage();
+
+            if ($e->hasResponse()) {
+                $response = $e->getResponse();
+                $body = (string) $response->getBody();
+                $decoded = json_decode($body, true);
+
+                $result['statusCode'] = $response->getStatusCode();
+                $result['reasonPhrase'] = $response->getReasonPhrase();
+                $result['responseHeaders'] = $response->getHeaders();
+                $result['body'] = $body;
+                $result['bodyJson'] = (json_last_error() === JSON_ERROR_NONE) ? $decoded : null;
+                $result['byteSize'] = strlen($body);
+            }
+        }
+
+        return $result;
+    }
+
     // Functional proxy to hit from frontend to communicate with external APIs. Used in proxy.php
     // This version is assuming data is included as a json (not using JSON.stringify).
     // Ensure requests to proxyRequest will have the csrf token included in the json.
-    public function proxyRequest($apiPath, $method = 'GET', $payload = [])
+    // $sourceIndex selects which configured "api-sources" instance (0-based) to send the request to.
+    public function proxyRequest($sourceIndex, $apiPath, $method = 'GET', $payload = [])
     {
-        //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
-        $client = new Client(['verify' => false]);
-        $tokenUrl = trim($this->getProjectSetting('oncore-token-url') ?: '');
-        $baseUrl = trim($this->getProjectSetting('oncore-api-url') ?: '');
+        $result = $this->dispatchApiRequest($sourceIndex, $apiPath, $method, $payload);
 
-        if (empty($tokenUrl)) {
-            throw new \Exception("Token URL is not configured.");
+        if ($result['success']) {
+            http_response_code($result['statusCode']);
+            echo $result['body'];
+            return;
         }
 
-        if (empty($baseUrl)) {
-            throw new \Exception("API URL is not configured.");
-        }
-
-        $apiUrl = rtrim($baseUrl, '/') . '/' . ltrim($apiPath, '/');
-        $clientId = $this->getProjectSetting('oncore-client');
-        $clientSecret = $this->getProjectSetting('oncore-secret');
-
-        try {
-            // Fetch Token
-            $token_response = $client->post($tokenUrl, [
-                'headers' => [
-                    'Content-Type' => 'application/x-www-form-urlencoded',
-                ],
-                'form_params' => [
-                    "client_id" => $clientId,
-                    "client_secret" => $clientSecret,
-                    "grant_type" => "client_credentials"
-                ],
-                'verify' => false, // Force bypass on this specific request
-                'curl' => [
-                    CURLOPT_SSL_VERIFYPEER => false,
-                    CURLOPT_SSL_VERIFYHOST => false
-                ]
-            ]);
-
-            // Read the stream exactly once
-            $tokenResponseBody = (string) $token_response->getBody();
-            $token_data = json_decode($tokenResponseBody, true);
-
-            $access_token = $token_data['access_token'] ?? null;
-
-            // Ensure we actually got a token before proceeding
-            if (!$access_token) {
-                error_log("OnCore Token Error: " . $tokenResponseBody);
-                throw new \Exception("Failed to retrieve access token from OnCore.");
-            }
-
-            // Make the actual API Request
-            $requestOptions = [
-                'headers' => [
-                    'Authorization' => "Bearer $access_token",
-                    'Accept' => 'application/json'
-                ]
-            ];
-
-            // Add payload if it's a POST/PUT request
-            if (!empty($payload) && in_array(strtoupper($method), ['POST', 'PUT', 'PATCH'])) {
-                $requestOptions['json'] = $payload; // Guzzle handles JSON encoding and headers
-            }
-
-            $response = $client->request(strtoupper($method), $apiUrl, $requestOptions);
-
-            http_response_code($response->getStatusCode());
-            echo $response->getBody()->getContents();
-
-        } catch (RequestException $e) {
-            http_response_code(500);
-
-            // Safely extract the response body if it exists
-            $errorBody = $e->hasResponse() ? (string) $e->getResponse()->getBody() : 'No response from server';
-
-            echo json_encode([
-                'error' => 'Request failed',
-                'code' => $e->getCode(),
-                'message' => $e->getMessage(),
-                'oncore_details' => json_decode($errorBody) ?? $errorBody
-            ]);
-        }
+        http_response_code($result['statusCode'] ?: 500);
+        echo json_encode([
+            'error' => 'Request failed',
+            'message' => $result['error'],
+            'details' => $result['bodyJson'] ?? $result['body']
+        ]);
     }
 }

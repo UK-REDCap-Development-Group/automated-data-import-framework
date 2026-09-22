@@ -1,0 +1,112 @@
+/* Modal Overlay: Dark background behind the popup */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+
+/* Modal Box: The main content container */
+.modal-box {
+    background-color: #ffffff;
+    padding: 25px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+    width: 90%;
+    max-width: 600px;
+    text-align: center;
+}
+
+/* Comparison Grid: Displays records side-by-side */
+.modal-comparison-grid {
+    display: flex;
+    gap: 2rem;
+    justify-content: space-between;
+}
+
+.modal-side {
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 4px 8px;
+    background: #f9f9f9;
+}
+
+
+.modal-record-header {
+    text-align: center;
+    font-weight: bold;
+    background: #f2f2f2;
+    padding: 6px;
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+
+.modal-column {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-column table {
+    width: 100% !important;
+    height: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+}
+
+.modal-column th,
+.modal-column td {
+    width: 50%; /* even split */
+    word-break: break-word;
+    white-space: normal;
+}
+
+/* Center the table within the modal */
+.modal-form-selection-grid table {
+    margin: 0 auto;
+    border-collapse: collapse;
+    width: auto;
+}
+
+/* Ensure left alignment for checkbox + label */
+.modal-form-selection-grid td {
+    text-align: left;
+    padding: 6px 12px;
+}
+
+/* Keep checkbox + label nicely spaced */
+.modal-form-selection-grid .checkbox-option {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    font-size: 13px;
+}
+
+/* Optional: limit modal height and make it scrollable for long lists */
+.modal-form-selection-grid {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-column button {
+    padding: 10px 20px;
+    border-radius: 5px;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    margin-top: 10px;
+    width: 100% !important;
+}
+
+.modal-column button:hover {
+    opacity: 0.8;
+}

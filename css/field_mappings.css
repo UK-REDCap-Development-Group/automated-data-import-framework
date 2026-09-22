@@ -1,0 +1,148 @@
+.warning {
+    margin: 0;
+    color: #b02a37;
+    font-weight: 600;
+    font-size: 1.4rem;
+}
+
+.disclaimer {
+    margin-top: 0.5rem;
+    color: #555;
+    font-size: 0.95rem;
+    line-height: 1.4;
+}
+
+/* Modal Overlay: Dark background behind the popup */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.6);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    overflow-y: auto;
+}
+
+/* Modal Box: The main content container */
+.modal-box {
+    background-color: #ffffff;
+    padding: 25px;
+    border-radius: 8px;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+    width: 90%;
+    max-width: 600px;
+    text-align: center;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+/* Center the "Manage Forms" table within its modal */
+.modal-form-selection-grid table {
+    margin: 0 auto;
+    border-collapse: collapse;
+    width: auto;
+}
+
+/* Ensure left alignment for checkbox + label */
+.modal-form-selection-grid td {
+    text-align: left;
+    padding: 6px 12px;
+}
+
+/* Keep checkbox + label nicely spaced */
+.modal-form-selection-grid .checkbox-option {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 6px;
+    font-size: 13px;
+}
+
+/* Limit modal height and make it scrollable for long lists */
+.modal-form-selection-grid {
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.selectA_btn {
+    background-color: #28a745;
+    color: white;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.close-button {
+    background-color: #dc3545;
+    color: white;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.center-home-sects span {
+    font-size: 5vw;
+    color: #606060;
+    transition: background-color 100ms linear;
+}
+
+.selection-btns {
+    margin: 0 10% 0 10%;
+}
+
+.selection-btns a {
+    text-decoration: none;
+}
+
+.center-home-sects {
+    text-align: center;
+    border-radius: 5%;
+    padding: 5% 0 5% 0;
+    margin: 0;
+    color: #606060;
+    transition: background-color 100ms linear;
+}
+
+.center-home-sects:hover {
+    color: #fff;
+    background-color: #606060;
+}
+
+.center-home-sects:hover span {
+    color: #fff;
+}
+
+/* Saved-mapping load spinner */
+.loader-container {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 50px;
+    width: 100%;
+}
+
+.loader {
+    border: 8px solid #f3f3f3; /* Light grey */
+    border-top: 8px solid #3498db; /* Blue */
+    border-radius: 50%;
+    width: 60px;
+    height: 60px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
