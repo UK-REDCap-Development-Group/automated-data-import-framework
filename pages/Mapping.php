@@ -28,32 +28,9 @@ foreach (\REDCap::getDataDictionary($project_id, 'array') as $fieldName => $fiel
 // Unlike a single hardcoded API, ADIF sources describe their available fields with a schema
 // set once in project configuration, since there's no universal convention across arbitrary
 // APIs for "query this to discover what's available" the way one specific API might have.
-$apiFields = [];
-foreach ($module->getApiSources() as $source) {
-    $schema = $source['schema'];
-    if (is_string($schema)) {
-        $schema = json_decode($schema, true);
-    }
-    if (!is_array($schema)) {
-        continue;
-    }
-
-    // A schema can be a flat list of field entries, or {"fields": [...]} - accept either.
-    $fieldList = (isset($schema['fields']) && is_array($schema['fields'])) ? $schema['fields'] : $schema;
-
-    foreach ($fieldList as $entry) {
-        if (is_string($entry)) {
-            $entry = ['field' => $entry];
-        }
-        if (empty($entry['field'])) {
-            continue;
-        }
-        $apiFields[] = [
-            'field' => $entry['field'],
-            'endpoint' => $entry['endpoint'] ?? $source['url'],
-        ];
-    }
-}
+$apiFields = array_map(function ($apiField) {
+    return ['field' => $apiField['field'], 'endpoint' => $apiField['endpoint']];
+}, $module->getApiFields());
 
 $projectTitle = \REDCap::getProjectTitle();
 ?>
@@ -330,9 +307,8 @@ $projectTitle = \REDCap::getProjectTitle();
                 header.innerHTML = `
             <tr>
                 <th style="width: 25%;">${instruments[selectedForm]} Fields</th>
-                <th style="width: 35%;">REDCap Field Label</th>
-                <th style="width: 25%;">API Field</th>
-                <th style="width: 15%;">Include Even If Unmapped</th>
+                <th style="width: 40%;">REDCap Field Label</th>
+                <th style="width: 35%;">API Field</th>
             </tr>`;
                 table.appendChild(header);
 
@@ -356,9 +332,6 @@ $projectTitle = \REDCap::getProjectTitle();
                     <select name="${redcapField}" id="${selectId}">
                         <option value="">None</option>
                     </select>
-                </td>
-                <td style="width:15%; text-align:center;">
-                    <input type="checkbox" class="include-unmapped" data-field="${redcapField}">
                 </td>
             `;
 
@@ -540,9 +513,8 @@ $projectTitle = \REDCap::getProjectTitle();
             const header = document.createElement('thead');
             header.innerHTML = `<tr>
                                     <th style="width: 25%;">${instrumentLabel} Fields</th>
-                                    <th style="width: 35%;">REDCap Field Label</th>
-                                    <th style="width: 25%;">API Field Path</th>
-                                    <th style="width: 15%;">Include Even If Unmapped</th>
+                                    <th style="width: 40%;">REDCap Field Label</th>
+                                    <th style="width: 35%;">API Field Path</th>
                                  </tr>`;
             table.appendChild(header);
 
@@ -571,11 +543,6 @@ $projectTitle = \REDCap::getProjectTitle();
                             <option value="">None</option>
                         </select>
                     </td>
-                    <td style="width:15%; text-align:center;">
-                        <input type="checkbox"
-                               class="include-unmapped"
-                               data-field="${redcapField}">
-                    </td>
                 `;
 
                 tbody.appendChild(row);
@@ -591,10 +558,6 @@ $projectTitle = \REDCap::getProjectTitle();
                         option.selected = true;
                     }
                 });
-                const checkbox = row.querySelector('.include-unmapped');
-                if (checkbox) {
-                    checkbox.checked = Boolean((mappedFields[redcapField] || {}).include_unmapped);
-                }
 
                 fragment.appendChild(table);
                 i++;
@@ -629,24 +592,15 @@ $projectTitle = \REDCap::getProjectTitle();
                 const selectedOption = select.options[select.selectedIndex];
                 const endpoint = selectedOption ? selectedOption.dataset.endpoint : null;
 
-                const row = select.closest('tr');
-                const checkbox = row?.querySelector('.include-unmapped');
-
-                const includeUnmapped = checkbox
-                    ? checkbox.checked
-                    : false;
-
                 console.log(
                     instrument,
                     redcapField,
                     selectedValue,
-                    endpoint,
-                    includeUnmapped
+                    endpoint
                 );
 
                 instrumentMapping[redcapField] = {
                     mapping: selectedValue,
-                    include_unmapped: includeUnmapped,
                     endpoint: endpoint,
                 };
             });
@@ -824,9 +778,6 @@ $projectTitle = \REDCap::getProjectTitle();
         // When a user changes a field mapping dropdown
         document.addEventListener('change', function (event) {
             if (event.target.matches('#instruments_list select')) {
-                checkpoint();
-            }
-            if (event.target.matches('#instruments_list input')) {
                 checkpoint();
             }
         });

@@ -39,6 +39,47 @@ trait Proxy
         return $sources;
     }
 
+    // Every field made available by any configured API source, read from each source's schema.
+    // A schema can be a flat list of field entries, or {"fields": [...]} - either is accepted, and an
+    // entry can be a bare path string or {"field": ..., "endpoint": ..., "path": ...}.
+    //   endpoint - the label fields are grouped under on the Mapping page (defaults to the source URL)
+    //   path     - what's appended to the source URL to fetch the field; defaults to the endpoint
+    //              when one is set, otherwise the source URL itself is requested. [field_name]
+    //              placeholders are filled from the record being imported into.
+    // Returns ['source' => ..., 'field' => ..., 'endpoint' => ..., 'path' => ...] per field.
+    public function getApiFields()
+    {
+        $apiFields = [];
+        foreach ($this->getApiSources() as $source) {
+            $schema = $source['schema'];
+            if (is_string($schema)) {
+                $schema = json_decode($schema, true);
+            }
+            if (!is_array($schema)) {
+                continue;
+            }
+
+            $fieldList = (isset($schema['fields']) && is_array($schema['fields'])) ? $schema['fields'] : $schema;
+
+            foreach ($fieldList as $entry) {
+                if (is_string($entry)) {
+                    $entry = ['field' => $entry];
+                }
+                if (!is_array($entry) || empty($entry['field'])) {
+                    continue;
+                }
+                $apiFields[] = [
+                    'source' => $source['index'],
+                    'field' => $entry['field'],
+                    'endpoint' => $entry['endpoint'] ?? $source['url'],
+                    'path' => $entry['path'] ?? $entry['endpoint'] ?? '',
+                ];
+            }
+        }
+
+        return $apiFields;
+    }
+
     // Pulls the configured API source at $sourceIndex out of the repeatable "api-sources" group.
     // Returns ['url' => ..., 'apiKey' => ..., 'schema' => ...]
     protected function getApiSource($sourceIndex)
@@ -68,7 +109,8 @@ trait Proxy
         $method = strtoupper($method);
 
         //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
-        $client = new Client(['verify' => false]);
+        // The timeout matters for imports, which run while a survey respondent waits on the completion page
+        $client = new Client(['verify' => false, 'timeout' => 30]);
 
         $headers = [
             'Accept' => 'application/json'
