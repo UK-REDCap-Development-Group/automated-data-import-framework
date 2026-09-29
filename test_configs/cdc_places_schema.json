@@ -1,0 +1,31 @@
+{
+    "fields": [
+        { "field": "[0].year",            "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[0].locationid",      "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[0].stateabbr",       "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[0].countyname",      "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[0].totalpopulation", "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[0].totalpop18plus",  "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+
+        { "field": "[measureid=DISABILITY].data_value",           "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=DEPRESSION].data_value",           "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=DEPRESSION].low_confidence_limit", "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=DEPRESSION].high_confidence_limit","endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=MHLTH].data_value",                "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=GHLTH].data_value",                "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=DIABETES].data_value",             "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=OBESITY].data_value",              "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=BPHIGH].data_value",               "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=CSMOKING].data_value",             "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=ACCESS2].data_value",              "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=CHECKUP].data_value",              "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+
+        { "field": "[measureid=FOODINSECU].data_value",   "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=FOODSTAMP].data_value",    "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=HOUSINSECU].data_value",   "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=SHUTUPTHREAT].data_value", "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=LACKTRPT].data_value",     "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=ISOLATION].data_value",    "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" },
+        { "field": "[measureid=EMOTIONSPT].data_value",   "endpoint": "CDC PLACES - Census tract", "path": "cwsq-ngmh.json?locationid=[census_tract_geoid]&$limit=100" }
+    ]
+}

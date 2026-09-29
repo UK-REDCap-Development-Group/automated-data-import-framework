@@ -26,7 +26,7 @@
         {
             "key": "api-sources",
             "name": "Input the base URLs of any APIs which you would like to make available to your project.",
-            "type": "descriptive",
+            "type": "sub_settings",
             "repeatable": true,
             "sub_settings": [
                 {
