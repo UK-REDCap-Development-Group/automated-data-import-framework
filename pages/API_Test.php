@@ -89,6 +89,7 @@ function adif_flatten_headers($headers)
         <?php endif; ?>
 
         <form method="post">
+            <input type="hidden" name="redcap_csrf_token" value="<?= htmlspecialchars($module->getCSRFToken()) ?>">
             <div class="adif-form-row">
                 <div class="adif-form-field">
                     <label for="adif-source">API Source</label>
