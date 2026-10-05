@@ -105,7 +105,18 @@ trait Proxy
     public function dispatchApiRequest($sourceIndex, $apiPath, $method = 'GET', $payload = [])
     {
         $source = $this->getApiSource($sourceIndex);
-        $apiUrl = rtrim($source['url'], '/') . '/' . ltrim($apiPath, '/');
+
+        return $this->sendApiRequest($source['url'], $source['apiKey'], $apiPath, $method, $payload);
+    }
+
+    // Does the actual HTTP work for dispatchApiRequest. Kept separate so schema detection can
+    // call a URL and key typed into the configuration dialog before they've been saved.
+    public function sendApiRequest($baseUrl, $apiKey, $apiPath, $method = 'GET', $payload = [])
+    {
+        $apiPath = (string) $apiPath;
+        // A path that is only a query string (?a=b) attaches directly, rather than as /?a=b,
+        // so a source URL can point at a single resource such as a Socrata dataset.
+        $apiUrl = rtrim($baseUrl, '/') . (str_starts_with($apiPath, '?') ? $apiPath : '/' . ltrim($apiPath, '/'));
         $method = strtoupper($method);
 
         //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
@@ -117,8 +128,8 @@ trait Proxy
         ];
 
         // Sources configured without an API key are called unauthenticated
-        if (!empty($source['apiKey'])) {
-            $headers['Authorization'] = "Bearer {$source['apiKey']}";
+        if (!empty($apiKey)) {
+            $headers['Authorization'] = "Bearer {$apiKey}";
         }
 
         $requestOptions = [

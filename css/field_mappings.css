@@ -146,3 +146,73 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+/* Lookup values: the line under a mapping's dropdown, and the prompt row */
+.lookup-status {
+    margin-top: 4px;
+    font-size: 12px;
+    color: #5A6270;
+}
+
+.lookup-status .lookup-change {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: #1F5F99;
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.lookup-status .lookup-chip {
+    padding: 3px 10px;
+    border: 1px solid #E8B4B9;
+    border-radius: 6px;
+    background: #FCEBEC;
+    color: #A12632;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.lookup-prompt-row > td {
+    background: #F5F9FD;
+}
+
+.lookup-prompt {
+    padding: 14px 16px;
+    border: 1px solid #1F5F99;
+    border-radius: 8px;
+    background: #FFFFFF;
+    text-align: left;
+}
+
+.lookup-prompt h4 {
+    margin: 0 0 4px;
+    font-size: 15px;
+}
+
+.lookup-prompt p {
+    margin: 0 0 10px;
+    color: #5A6270;
+}
+
+.lookup-prompt-choices {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+}
+
+.lookup-prompt-choices label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1 1 280px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #5A6270;
+}
+
+.lookup-prompt-choices select {
+    font-weight: normal;
+}

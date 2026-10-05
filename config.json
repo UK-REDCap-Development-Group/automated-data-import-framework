@@ -11,6 +11,9 @@
         }
     ],
     "system-settings": [],
+    "auth-ajax-actions": [
+        "detect-schema"
+    ],
     "links": {
         "project": [
             {
@@ -19,6 +22,12 @@
                 "url": "pages/API_Test.php",
                 "show-header": true,
                 "show-user-setting": "show-api-test-page"
+            },
+            {
+                "name": "Mapping",
+                "icon": "fa-right-left",
+                "url": "pages/Mapping.php",
+                "show-header": true
             }
         ]
     },
@@ -35,8 +44,13 @@
                     "type": "text"
                 },
                 {
+                    "key": "schema-probe",
+                    "name": "Endpoint to check for a schema (optional). It's added to the URL above the same way a field's path is, and can use [field_name] placeholders, e.g. <code>cwsq-ngmh.json?locationid=[census_tract_geoid]</code>",
+                    "type": "text"
+                },
+                {
                     "key": "schema",
-                    "name": "Please provide the API schema.",
+                    "name": "Please provide the API schema, or use <b>Detect schema</b> to read it from the API.",
                     "type": "json"
                 },
                 {

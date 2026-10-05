@@ -85,7 +85,7 @@ trait Import
         foreach ($requests as $request) {
             $apiPath = $request['path'];
             try {
-                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path']);
+                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary);
                 $result = $this->dispatchApiRequest($request['source'], $apiPath);
             } catch (\Throwable $e) {
                 $summary['errors'][] = "$apiPath: " . $e->getMessage();
@@ -156,36 +156,64 @@ trait Import
         return ($endpoint === null || $endpoint === '') ? $fallback : null;
     }
 
-    // Replaces REDCap-style [field_name] placeholders in an endpoint path with this record's values,
-    // e.g. "/people/[email]" becomes "/people/jane%40example.com".
-    private function pipeRecordValues($projectId, $record, $eventId, $apiPath)
+    // The REDCap field chosen on the Mapping page to supply a source's [placeholder] (see
+    // scripts/save_lookups.php). Without a choice, a field with the placeholder's own name is used.
+    public function getLookupField($sourceIndex, $placeholder)
+    {
+        $lookups = $this->getProjectSetting('lookup-fields') ?: [];
+        $field = $lookups[$sourceIndex][$placeholder] ?? '';
+
+        return $field !== '' ? $field : $placeholder;
+    }
+
+    // Replaces [placeholder]s in an endpoint path with this record's values, e.g. "/people/[email]"
+    // becomes "/people/jane%40example.com". Each placeholder is read from its lookup field.
+    private function pipeRecordValues($projectId, $record, $eventId, $apiPath, $sourceIndex, $dictionary)
     {
         if (!preg_match_all('/\[([a-z][a-z0-9_]*)\]/', $apiPath, $matches)) {
             return $apiPath;
         }
 
-        $fields = array_unique($matches[1]);
+        $fieldFor = [];
+        foreach (array_unique($matches[1]) as $placeholder) {
+            $field = $this->getLookupField($sourceIndex, $placeholder);
+            if (!isset($dictionary[$field])) {
+                throw new \Exception("[$placeholder] is looked up from the field \"$field\", which isn't in this project."
+                    . " Choose its lookup field on the Mapping page.");
+            }
+            $fieldFor[$placeholder] = $field;
+        }
+
+        // Not limited to $eventId: a lookup value such as an address is often collected in another
+        // event (e.g. baseline) than the one being imported into, which is still preferred below.
         $data = json_decode(REDCap::getData([
             'project_id' => $projectId,
             'return_format' => 'json',
             'records' => [$record],
-            'fields' => $fields,
-            'events' => [$eventId],
+            'fields' => array_values(array_unique($fieldFor)),
         ]), true) ?: [];
 
-        // A field only has a value on one of the returned rows (base or a repeat instance), so
-        // take the first non-blank one.
+        if (REDCap::isLongitudinal()) {
+            $eventName = REDCap::getEventNames(true, false, $eventId);
+            usort($data, function ($a, $b) use ($eventName) {
+                return (($b['redcap_event_name'] ?? '') === $eventName) <=> (($a['redcap_event_name'] ?? '') === $eventName);
+            });
+        }
+
+        // A field only has a value on one of the returned rows (an event, or a repeat instance),
+        // so take the first non-blank one.
         $values = [];
-        foreach ($fields as $field) {
-            $values[$field] = '';
+        foreach ($fieldFor as $placeholder => $field) {
+            $values[$placeholder] = '';
             foreach ($data as $row) {
                 if (isset($row[$field]) && $row[$field] !== '') {
-                    $values[$field] = $row[$field];
+                    $values[$placeholder] = $row[$field];
                     break;
                 }
             }
-            if ($values[$field] === '') {
-                throw new \Exception("Record $record has no value for [$field], which the endpoint needs.");
+            if ($values[$placeholder] === '') {
+                $source = $field === $placeholder ? "[$field]" : "[$placeholder] (field $field)";
+                throw new \Exception("Record $record has no value for $source, which the endpoint needs.");
             }
         }
 

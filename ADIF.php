@@ -8,11 +8,13 @@ use REDCap;
 
 require_once __DIR__ . '/classes/Proxy.php';
 require_once __DIR__ . '/classes/Import.php';
+require_once __DIR__ . '/classes/SchemaDetection.php';
 
 class ADIF extends AbstractExternalModule
 {
     use Proxy;
     use Import;
+    use SchemaDetection;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -55,10 +57,73 @@ class ADIF extends AbstractExternalModule
         return $_SERVER['REQUEST_URI'];
     }
 
-    // Checks for which form we are on and includes instructions for mapping data to fields on that page
+    // The project's External Modules page, where the configuration dialog opens. Unlike
+    // isExternalModulePage(), this leaves out the manager's ajax endpoints, whose JSON responses
+    // must not have anything printed into them.
+    private static function isModuleManagerPage()
+    {
+        $page = isset($_SERVER['PHP_SELF']) ? $_SERVER['PHP_SELF'] : "";
+        return (bool) preg_match("/(ExternalModules|external_modules)\/manager\/project\.php/", $page);
+    }
+
+    // Users who may change the module's configuration, and so the API sources it calls
+    private function canConfigureApiSources($project_id)
+    {
+        $user = $this->getUser();
+        return $user && ($user->isSuperUser() || $user->hasDesignRights($project_id));
+    }
+
     function redcap_every_page_top($project_id)
     {
+        // Adds the "Detect schema" button to each API source in the configuration dialog
+        if ($project_id && self::isModuleManagerPage() && $this->canConfigureApiSources($project_id)) {
+            $this->initializeJavascriptModuleObject();
+            echo '<script>window.ADIFSchemaDetect = { prefix: ' . json_encode($this->getPrefix())
+                . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
+            $this->includeJS('js/schema_detect.js');
+        }
+    }
 
+    // Requests from module.ajax() in the browser. Actions must also be listed under auth-ajax-actions in config.json.
+    function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
+    {
+        switch ($action) {
+            case 'detect-schema':
+                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
+                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can detect API schemas.'];
+                }
+                try {
+                    return ['status' => 'success'] + $this->detectApiSchema(
+                        $payload['url'] ?? '',
+                        $this->apiKeyForDetection($payload),
+                        $payload['probePath'] ?? ''
+                    );
+                } catch (\Throwable $e) {
+                    return ['status' => 'error', 'message' => $e->getMessage()];
+                }
+
+            default:
+                return ['status' => 'error', 'message' => "Unknown action: $action"];
+        }
+    }
+
+    // The key typed into the dialog, or, when that's blank, the one already saved for the same source.
+    // The saved key is only used when the saved URL at that position matches, since adding or removing
+    // sources in the dialog shifts positions before they're saved.
+    private function apiKeyForDetection($payload)
+    {
+        $typed = trim((string) ($payload['apiKey'] ?? ''));
+        if ($typed !== '' || !isset($payload['instance']) || !is_numeric($payload['instance'])) {
+            return $typed;
+        }
+
+        $index = (int) $payload['instance'];
+        $urls = $this->getProjectSetting('api') ?: [];
+        $keys = $this->getProjectSetting('api-key') ?: [];
+        if (trim((string) ($urls[$index] ?? '')) === trim((string) ($payload['url'] ?? ''))) {
+            return trim((string) ($keys[$index] ?? ''));
+        }
+        return '';
     }
 
     // Pulls from the configured APIs and saves the mapped values into the record once a survey is submitted.

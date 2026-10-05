@@ -28,9 +28,20 @@ foreach (\REDCap::getDataDictionary($project_id, 'array') as $fieldName => $fiel
 // Unlike a single hardcoded API, ADIF sources describe their available fields with a schema
 // set once in project configuration, since there's no universal convention across arbitrary
 // APIs for "query this to discover what's available" the way one specific API might have.
+// Each also carries its source and the [placeholder]s its endpoint path sends to the API to find
+// a record's data, so picking it can ask which REDCap field holds those values.
 $apiFields = array_map(function ($apiField) {
-    return ['field' => $apiField['field'], 'endpoint' => $apiField['endpoint']];
+    preg_match_all('/\[([a-z][a-z0-9_]*)\]/', $apiField['path'], $matches);
+    return [
+        'field' => $apiField['field'],
+        'endpoint' => $apiField['endpoint'],
+        'source' => $apiField['source'],
+        'lookups' => array_values(array_unique($matches[1])),
+    ];
 }, $module->getApiFields());
+
+// The REDCap field chosen to supply each source's placeholders (see scripts/save_lookups.php)
+$savedLookups = $module->getProjectSetting('lookup-fields') ?: [];
 
 $projectTitle = \REDCap::getProjectTitle();
 ?>
@@ -54,6 +65,9 @@ $projectTitle = \REDCap::getProjectTitle();
     // Every field discovered across all configured API sources. Static for the life of the page
     // load - reconfigure a source's schema and reload to pick up changes.
     const apiFields = <?= json_encode($apiFields) ?>;
+
+    // { "<source>": { "<placeholder>": "<field>" } }
+    let savedLookups = Object.assign({}, <?= json_encode((object) $savedLookups) ?>);
 </script>
 
 <script>
@@ -118,6 +132,10 @@ $projectTitle = \REDCap::getProjectTitle();
         option.value = obj.field;
         option.textContent = apiFieldDisplay(obj.field);
         option.setAttribute('data-endpoint', obj.endpoint);
+        option.setAttribute('data-source', obj.source);
+        if (obj.lookups && obj.lookups.length) {
+            option.setAttribute('data-lookups', obj.lookups.join(','));
+        }
 
         // [] takes every value in a list; a role segment such as
         // principalInvestigator takes only that person's, which is what lets
@@ -275,7 +293,7 @@ $projectTitle = \REDCap::getProjectTitle();
                 const table = document.getElementById(formKey);
 
                 if (table) {
-                    const selects = Array.from(table.querySelectorAll('select'));
+                    const selects = Array.from(table.querySelectorAll('select[name]'));
                     const hasConfiguredData = selects.some(sel => sel.value && sel.value !== "");
 
                     if (hasConfiguredData) {
@@ -345,6 +363,7 @@ $projectTitle = \REDCap::getProjectTitle();
                 document.getElementById('instruments_list').appendChild(table);
             });
 
+            refreshAllLookupStatuses();
             closeModal(true);
             checkpoint();
         });
@@ -567,6 +586,7 @@ $projectTitle = \REDCap::getProjectTitle();
         // Clear the container (removes the loader) and append all tables
         container.innerHTML = '';
         container.appendChild(fragment);
+        refreshAllLookupStatuses();
     }
 
     // TODO: somehow we want to log changes made, but it runs on every individual change currently. Refactor so that we
@@ -583,7 +603,8 @@ $projectTitle = \REDCap::getProjectTitle();
 
             const instrumentMapping = {};
 
-            table.querySelectorAll('select').forEach(select => {
+            // select[name]: the mapping dropdowns, not a lookup prompt's
+            table.querySelectorAll('select[name]').forEach(select => {
 
                 const redcapField = select.name;
                 const selectedValue = select.value;
@@ -687,6 +708,241 @@ $projectTitle = \REDCap::getProjectTitle();
         return sortedMappings;
     }
 
+    // Fields that can hold a lookup value. Descriptive, file and checkbox fields have no single
+    // value to send, and calc fields are left in since a computed ID is a reasonable thing to look up by.
+    function lookupFieldOptions() {
+        const unusable = ['descriptive', 'file', 'checkbox'];
+        const groups = [];
+        Object.keys(instruments).forEach(form => {
+            const fields = Object.entries(dictionary[form] || {})
+                .filter(([, info]) => !unusable.includes(info.field_type))
+                .map(([name, info]) => ({name, label: info.field_label.replace(/(<([^>]+)>)/gi, '')}));
+            if (fields.length) groups.push({label: instruments[form], fields});
+        });
+        return groups;
+    }
+
+    function fieldExists(name) {
+        return Object.values(dictionary).some(fields => Object.prototype.hasOwnProperty.call(fields, name));
+    }
+
+    // ---- Lookup values ----
+    // An endpoint path's [placeholder]s are sent to its API to find the record's data, filled from a
+    // REDCap field. Picking an API field whose endpoint needs one with no field behind it opens a
+    // prompt under that row. "Not now" leaves a chip on the row that reopens it, and a row whose
+    // lookups are all set says where each value comes from, with a way to change it.
+
+    // The field a source's placeholder is read from: the saved choice, else a field with the
+    // placeholder's own name, as Import::getLookupField does. '' when neither is in the project.
+    function lookupFieldFor(source, placeholder) {
+        const saved = (savedLookups[source] || {})[placeholder] || '';
+        const field = saved !== '' ? saved : placeholder;
+        return fieldExists(field) ? field : '';
+    }
+
+    // The field most likely to hold a placeholder's value: the same name, then a name containing it
+    // or contained in it (address -> home_address, census_tract_geoid -> tract_geoid), then the
+    // most shared words. '' when nothing is close.
+    function suggestLookupField(placeholder) {
+        const words = placeholder.split('_');
+        let best = '';
+        let bestScore = 0;
+        lookupFieldOptions().forEach(group => group.fields.forEach(({name}) => {
+            let score;
+            if (name === placeholder) score = 100;
+            else if (name.includes(placeholder)) score = 80;
+            else if (placeholder.includes(name)) score = 70;
+            else score = 10 * name.split('_').filter(word => word.length > 2 && words.includes(word)).length;
+            if (score > bestScore) {
+                best = name;
+                bestScore = score;
+            }
+        }));
+        return best;
+    }
+
+    // The selected API field's source, endpoint and placeholders, or null when it has none
+    function selectedLookups(select) {
+        const option = select.options[select.selectedIndex];
+        if (!option || !option.dataset.lookups) return null;
+        return {
+            source: option.dataset.source,
+            endpoint: option.dataset.endpoint,
+            placeholders: option.dataset.lookups.split(','),
+        };
+    }
+
+    function missingLookups(lookups) {
+        return lookups ? lookups.placeholders.filter(p => lookupFieldFor(lookups.source, p) === '') : [];
+    }
+
+    // The line under a mapping's dropdown: nothing without lookups, a chip while one isn't set, or
+    // where each value is looked up from
+    function refreshLookupStatus(select) {
+        const cell = select.parentElement;
+        let status = cell.querySelector('.lookup-status');
+        if (!status) {
+            status = document.createElement('div');
+            status.className = 'lookup-status';
+            cell.appendChild(status);
+        }
+        status.textContent = '';
+
+        const lookups = selectedLookups(select);
+        if (!lookups) return;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.addEventListener('click', () => openLookupPrompt(select));
+
+        const missing = missingLookups(lookups);
+        if (missing.length) {
+            button.className = 'lookup-chip';
+            button.textContent = `Needs ${missing.map(p => `[${p}]`).join(', ')} · Set lookup field`;
+            status.appendChild(button);
+        } else {
+            const text = document.createElement('span');
+            text.textContent = 'Looks up ' + lookups.placeholders
+                .map(p => `[${p}] from ${lookupFieldFor(lookups.source, p)}`).join(', ');
+            button.className = 'lookup-change';
+            button.textContent = 'Change';
+            status.append(text, ' · ', button);
+        }
+    }
+
+    function refreshAllLookupStatuses() {
+        document.querySelectorAll('#instruments_list select[name]').forEach(refreshLookupStatus);
+    }
+
+    // How many other mapped fields read this source's placeholder, since a choice covers them too
+    function countOtherMappings(source, placeholder, except) {
+        let count = 0;
+        document.querySelectorAll('#instruments_list select[name]').forEach(other => {
+            const lookups = other === except ? null : selectedLookups(other);
+            if (lookups && lookups.source === source && lookups.placeholders.includes(placeholder)) count++;
+        });
+        return count;
+    }
+
+    function closeLookupPrompts() {
+        document.querySelectorAll('#instruments_list .lookup-prompt-row').forEach(row => row.remove());
+    }
+
+    // The prompt, in a full-width row under the mapping. One field choice per placeholder the
+    // endpoint uses; ones already set show their current field, so the same prompt changes them.
+    function openLookupPrompt(select) {
+        closeLookupPrompts();
+        const lookups = selectedLookups(select);
+        if (!lookups) return;
+
+        const mappingRow = select.closest('tr');
+        const promptRow = document.createElement('tr');
+        promptRow.className = 'lookup-prompt-row';
+        const cell = document.createElement('td');
+        cell.colSpan = mappingRow.children.length;
+        promptRow.appendChild(cell);
+
+        const box = document.createElement('div');
+        box.className = 'lookup-prompt';
+        box.setAttribute('role', 'group');
+
+        const placeholderList = lookups.placeholders.map(p => `[${p}]`).join(' and ');
+        const title = document.createElement('h4');
+        title.textContent = `${lookups.endpoint} finds records by ${placeholderList}`;
+        box.setAttribute('aria-label', title.textContent);
+
+        const others = Math.max(...lookups.placeholders.map(p => countOtherMappings(lookups.source, p, select)));
+        const intro = document.createElement('p');
+        intro.textContent = `Which REDCap field holds ${lookups.placeholders.length > 1 ? 'each one' : 'it'}? `
+            + 'This applies to every field mapped from this API source'
+            + (others > 0 ? `, including ${others} other mapped field${others === 1 ? '' : 's'}.` : '.');
+        box.append(title, intro);
+
+        const choices = document.createElement('div');
+        choices.className = 'lookup-prompt-choices';
+        const groups = lookupFieldOptions();
+        const pickers = lookups.placeholders.map(placeholder => {
+            const current = lookupFieldFor(lookups.source, placeholder);
+            const suggested = current === '' ? suggestLookupField(placeholder) : '';
+
+            const label = document.createElement('label');
+            label.textContent = `REDCap field for [${placeholder}]`;
+            const picker = document.createElement('select');
+            picker.className = 'lookup-prompt-select';
+            picker.dataset.placeholder = placeholder;
+
+            const blank = document.createElement('option');
+            blank.value = '';
+            blank.textContent = '-- Choose a field --';
+            picker.appendChild(blank);
+            groups.forEach(group => {
+                const optgroup = document.createElement('optgroup');
+                optgroup.label = group.label;
+                group.fields.forEach(field => {
+                    const option = document.createElement('option');
+                    option.value = field.name;
+                    option.textContent = (field.label ? `${field.name} (${field.label.slice(0, 40)})` : field.name)
+                        + (field.name === suggested ? ' · suggested' : '');
+                    optgroup.appendChild(option);
+                });
+                picker.appendChild(optgroup);
+            });
+            picker.value = current || suggested;
+
+            label.appendChild(picker);
+            choices.appendChild(label);
+            return picker;
+        });
+
+        const use = document.createElement('button');
+        use.type = 'button';
+        use.className = 'selectA_btn';
+        use.textContent = pickers.length > 1 ? 'Use these fields' : 'Use this field';
+        const later = document.createElement('button');
+        later.type = 'button';
+        later.className = 'close-button';
+        later.textContent = 'Not now';
+        choices.append(use, later);
+        box.appendChild(choices);
+        cell.appendChild(box);
+        mappingRow.after(promptRow);
+
+        use.addEventListener('click', () => {
+            if (pickers.some(picker => picker.value === '')) {
+                alert('Choose a field for each lookup value, or select "Not now".');
+                return;
+            }
+            savedLookups[lookups.source] = Object.assign({}, savedLookups[lookups.source] || {});
+            pickers.forEach(picker => {
+                savedLookups[lookups.source][picker.dataset.placeholder] = picker.value;
+            });
+            saveLookupFields();
+            closeLookupPrompts();
+            refreshAllLookupStatuses();
+        });
+        later.addEventListener('click', closeLookupPrompts);
+        pickers[0].focus();
+    }
+
+    // Saves every source's choices, as { "<source>": { "<placeholder>": "<field>" } }
+    function saveLookupFields() {
+        $.ajax({
+            url: "<?= $module->getUrl('scripts/save_lookups.php') ?>",
+            method: "POST",
+            dataType: "json",
+            data: {
+                pid: <?= json_encode($_GET['pid'] ?? $project_id ?? 0) ?>,
+                redcap_csrf_token: <?= json_encode($csrf) ?>,
+                lookups: JSON.stringify(savedLookups)
+            },
+            success: result => { savedLookups = Object.assign({}, result.lookups || {}); },
+            error: (xhr, status, error) => {
+                console.error('Error saving lookup fields:', error, xhr.responseText);
+                alert('The lookup field choice could not be saved. Please try again.');
+            }
+        });
+    }
+
     // Load the saved checkpoint when the page is initialized
     document.addEventListener('DOMContentLoaded', () => {
         load_checkpoint();
@@ -777,8 +1033,15 @@ $projectTitle = \REDCap::getProjectTitle();
 
         // When a user changes a field mapping dropdown
         document.addEventListener('change', function (event) {
-            if (event.target.matches('#instruments_list select')) {
+            // select[name]: the mapping dropdowns, not a lookup prompt's
+            if (event.target.matches('#instruments_list select[name]')) {
                 checkpoint();
+                refreshLookupStatus(event.target);
+                if (missingLookups(selectedLookups(event.target)).length) {
+                    openLookupPrompt(event.target);
+                } else if (event.target.closest('tr').nextElementSibling?.classList.contains('lookup-prompt-row')) {
+                    closeLookupPrompts();
+                }
             }
         });
     });
