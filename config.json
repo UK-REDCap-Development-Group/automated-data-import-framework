@@ -10,7 +10,42 @@
             "institution": "University of Kentucky CCTS"
         }
     ],
-    "system-settings": [],
+    "system-settings": [
+        {
+            "key": "adif-cache-block-network",
+            "name": "<b>API caching:</b> block all outbound API calls. Every project runs offline, using only data already cached on this server.",
+            "type": "checkbox"
+        },
+        {
+            "key": "adif-cache-block-identifying",
+            "name": "Don't allow API sources to send identifying record values (such as addresses) to external services. Sources that pipe in record values run offline unless the project marks those values as public codes.",
+            "type": "checkbox"
+        },
+        {
+            "key": "adif-cache-disallow-live",
+            "name": "Don't allow projects to choose \"Always fetch the latest data\" (e.g. for rate-limited APIs).",
+            "type": "checkbox"
+        },
+        {
+            "key": "adif-cache-max-scope",
+            "name": "Widest sharing allowed for cached API responses",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "system",
+                    "name": "Across projects, for public data from keyless sources (default)"
+                },
+                {
+                    "value": "project",
+                    "name": "Within a project only"
+                },
+                {
+                    "value": "record",
+                    "name": "Within a record only"
+                }
+            ]
+        }
+    ],
     "auth-ajax-actions": [
         "detect-schema"
     ],
@@ -57,6 +92,83 @@
                     "key": "api-key",
                     "name": "If this source needs an API key, input it here.",
                     "type": "password"
+                },
+                {
+                    "key": "cache-mode",
+                    "name": "<b>Caching:</b> when should ADIF call this API?",
+                    "type": "dropdown",
+                    "choices": [
+                        {
+                            "value": "cache_first",
+                            "name": "Only for data not already stored (default)"
+                        },
+                        {
+                            "value": "refresh_if_stale",
+                            "name": "When stored data is older than a set number of days"
+                        },
+                        {
+                            "value": "live",
+                            "name": "Always fetch the latest data"
+                        },
+                        {
+                            "value": "offline",
+                            "name": "Never: use stored data only"
+                        }
+                    ]
+                },
+                {
+                    "key": "cache-max-age-days",
+                    "name": "Refresh stored data older than this many days",
+                    "type": "text",
+                    "validation": "integer",
+                    "branchingLogic": {
+                        "field": "cache-mode",
+                        "value": "refresh_if_stale"
+                    }
+                },
+                {
+                    "key": "cache-on-failure",
+                    "name": "If this API is unavailable",
+                    "type": "dropdown",
+                    "choices": [
+                        {
+                            "value": "use_stale",
+                            "name": "Use the last stored value and note it in the module log (default)"
+                        },
+                        {
+                            "value": "fail",
+                            "name": "Leave the fields blank and log an error"
+                        }
+                    ]
+                },
+                {
+                    "key": "data-version",
+                    "name": "Data version (optional), e.g. <code>2023</code>. Changing it makes ADIF fetch fresh data instead of reusing data stored under the old version. Recommended for versioned data such as ACS releases.",
+                    "type": "text"
+                },
+                {
+                    "key": "lookups-are-public",
+                    "name": "The record values piped into this source's [placeholders] are public codes (e.g. census tract IDs), not identifying information such as addresses. Leave unchecked if unsure: identifying requests are cached only within this project, under one-way hashed keys.",
+                    "type": "checkbox"
+                },
+                {
+                    "key": "cache-scope",
+                    "name": "Share stored responses",
+                    "type": "dropdown",
+                    "choices": [
+                        {
+                            "value": "project",
+                            "name": "Across records in this project (default)"
+                        },
+                        {
+                            "value": "record",
+                            "name": "Only within the same record"
+                        },
+                        {
+                            "value": "system",
+                            "name": "With other projects on this server (public, keyless sources only)"
+                        }
+                    ]
                 }
             ]
         },
