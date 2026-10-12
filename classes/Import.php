@@ -17,7 +17,7 @@ trait Import
     // Returns a summary of what was saved and what was skipped, which is also written to the module log.
     public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1)
     {
-        $summary = ['saved' => [], 'skipped' => [], 'errors' => []];
+        $summary = ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => []];
 
         $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
         if (empty($mappings)) {
@@ -86,20 +86,23 @@ trait Import
             $apiPath = $request['path'];
             try {
                 $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary);
-                $result = $this->dispatchApiRequest($request['source'], $apiPath);
+                // Goes through the cache (see ApiCache): depending on the source's settings this may be
+                // answered locally, sent to the API, or refused (e.g. offline mode).
+                $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath);
             } catch (\Throwable $e) {
                 $summary['errors'][] = "$apiPath: " . $e->getMessage();
                 continue;
             }
 
-            if (!$result['success'] || !is_array($result['bodyJson'])) {
-                $summary['errors'][] = "{$result['requestUrl']}: " . ($result['error'] ?: 'response was not JSON');
+            array_push($summary['notices'], ...$fetched['notices']);
+            if ($fetched['json'] === null) {
+                $summary['errors'][] = "$apiPath: " . ($fetched['message'] ?: 'no data');
                 continue;
             }
 
             foreach ($request['fields'] as $target) {
                 $field = $target['field'];
-                $value = $this->resolveApiPath($result['bodyJson'], $target['path']);
+                $value = $this->resolveApiPath($fetched['json'], $target['path']);
                 if ($value === null || $value === '') {
                     $summary['skipped'][] = "$field: no value at \"{$target['path']}\"";
                     continue;

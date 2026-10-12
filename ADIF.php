@@ -9,12 +9,14 @@ use REDCap;
 require_once __DIR__ . '/classes/Proxy.php';
 require_once __DIR__ . '/classes/Import.php';
 require_once __DIR__ . '/classes/SchemaDetection.php';
+require_once __DIR__ . '/classes/ApiCache.php';
 
 class ADIF extends AbstractExternalModule
 {
     use Proxy;
     use Import;
     use SchemaDetection;
+    use ApiCache;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -136,7 +138,7 @@ class ADIF extends AbstractExternalModule
             $summary = ['saved' => [], 'skipped' => [], 'errors' => [$e->getMessage()]];
         }
 
-        if (empty($summary['saved']) && empty($summary['skipped']) && empty($summary['errors'])) {
+        if (empty($summary['saved']) && empty($summary['skipped']) && empty($summary['errors']) && empty($summary['notices'])) {
             return;
         }
 
@@ -147,6 +149,7 @@ class ADIF extends AbstractExternalModule
             'saved' => implode(', ', $summary['saved']),
             'skipped' => implode("\n", $summary['skipped']),
             'errors' => implode("\n", $summary['errors']),
+            'notices' => implode("\n", $summary['notices'] ?? []),
         ]);
     }
 }
