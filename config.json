@@ -52,20 +52,20 @@
     "links": {
         "project": [
             {
-                "name": "ADIF: API Test",
+                "name": "ADIF API Test",
                 "icon": "gear",
                 "url": "pages/API_Test.php",
                 "show-header": true,
                 "show-user-setting": "show-api-test-page"
             },
             {
-                "name": "Mapping",
+                "name": "ADIF Mapping",
                 "icon": "fa-right-left",
                 "url": "pages/Mapping.php",
                 "show-header": true
             },
             {
-                "name": "ADIF: Data Tables",
+                "name": "ADIF Data Tables",
                 "icon": "fa-table",
                 "url": "pages/Data_Tables.php",
                 "show-header": true

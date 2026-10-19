@@ -5,6 +5,9 @@
 
 /** @var \UKModules\ADIF\ADIF $module */
 
+// Now you can safely render your page
+require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
+
 $sources = $module->getApiSources();
 // Uploaded tables are queried here too, as "table:<id>" sources (see classes/DataTables.php)
 $tables = $module->getDataTables();
