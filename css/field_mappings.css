@@ -216,3 +216,267 @@
 .lookup-prompt-choices select {
     font-weight: normal;
 }
+
+/* API field picker: the button standing in for each row's dropdown, and the shared search
+   popover it opens (see attachApiFieldPicker in pages/Mapping.php) */
+.adif-picker-trigger {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 36px;
+    padding: 4px 10px;
+    border: 1px solid #C9CED6;
+    border-radius: 6px;
+    background: #FFFFFF;
+    color: #1C2128;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.adif-picker-trigger:hover {
+    border-color: #8A94A3;
+}
+
+.adif-picker-trigger:focus-visible {
+    outline: 2px solid #1F5F99;
+    outline-offset: 1px;
+}
+
+.adif-picker-trigger.is-open {
+    border-color: #1F5F99;
+    box-shadow: 0 0 0 1px #1F5F99;
+}
+
+.adif-picker-trigger.is-empty {
+    border-style: dashed;
+    color: #5A6270;
+}
+
+.adif-picker-trigger svg {
+    flex: none;
+}
+
+.adif-picker-value {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.adif-picker-trigger:not(.is-empty) .adif-picker-value,
+.adif-picker-option-main,
+.adif-picker-option-path,
+.adif-picker-lookup code {
+    font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.adif-picker-badge {
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    max-width: 45%;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #EEF0F3;
+    color: #3D4550;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.adif-picker-badge svg {
+    flex: none;
+}
+
+.adif-picker-badge-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.adif-picker {
+    position: absolute;
+    z-index: 1040;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #C9CED6;
+    border-radius: 8px;
+    background: #FFFFFF;
+    box-shadow: 0 12px 32px rgba(20, 30, 45, 0.18);
+    color: #1C2128;
+    font-size: 13px;
+    text-align: left;
+}
+
+.adif-picker[hidden],
+.adif-picker-chips[hidden],
+.adif-picker-lookup[hidden] {
+    display: none;
+}
+
+.adif-picker-search {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 10px 0;
+    padding: 0 10px;
+    border: 2px solid #1F5F99;
+    border-radius: 6px;
+    color: #1F5F99;
+    font-weight: normal;
+}
+
+.adif-picker-search input {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 0;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: #1C2128;
+    font: inherit;
+    font-size: 14px;
+}
+
+.adif-picker-chips {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 76px;
+    overflow-y: auto;
+    padding: 10px;
+    border-bottom: 1px solid #E4E7EB;
+}
+
+.adif-picker-chip {
+    max-width: 100%;
+    padding: 3px 10px;
+    overflow: hidden;
+    border: 1px solid #C9CED6;
+    border-radius: 999px;
+    background: #FFFFFF;
+    color: #1C2128;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.adif-picker-chip[aria-pressed="true"] {
+    border-color: #1F5F99;
+    background: #1F5F99;
+    color: #FFFFFF;
+    font-weight: 600;
+}
+
+.adif-picker-chip.is-empty {
+    border-color: #E0E3E8;
+    color: #6B7480;
+}
+
+.adif-picker-list {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 6px 6px;
+}
+
+.adif-picker-group-label {
+    padding: 10px 6px 4px;
+    color: #5A6270;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.adif-picker-option {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.adif-picker-option.is-active {
+    background: #E8F0FA;
+}
+
+.adif-picker-option-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.adif-picker-option.is-clear .adif-picker-option-main {
+    font-family: inherit;
+    color: #5A6270;
+}
+
+.adif-picker-option-path {
+    color: #5A6270;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+
+.adif-picker-option mark {
+    padding: 0;
+    border-radius: 2px;
+    background: #FDE3A7;
+    color: inherit;
+}
+
+.adif-picker-current {
+    margin-left: auto;
+    color: #1E6B3A;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.adif-picker-empty {
+    padding: 16px 8px;
+    color: #5A6270;
+}
+
+.adif-picker-lookup {
+    flex: none;
+    margin: 0 10px 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: #F4F5F7;
+    color: #3D4550;
+    font-size: 12px;
+}
+
+.adif-picker-lookup code {
+    padding: 0;
+    background: none;
+    color: inherit;
+    font-size: 12px;
+}
+
+.adif-picker-footer {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 4px 16px;
+    padding: 8px 10px;
+    border-top: 1px solid #E4E7EB;
+    color: #5A6270;
+    font-size: 12px;
+}

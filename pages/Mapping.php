@@ -136,42 +136,617 @@ $projectTitle = \REDCap::getProjectTitle();
         if (obj.lookups && obj.lookups.length) {
             option.setAttribute('data-lookups', obj.lookups.join(','));
         }
-
-        // [] takes every value in a list; a role segment such as
-        // principalInvestigator takes only that person's, which is what lets
-        // the field sync without extra handling.
-        const note = obj.field.includes('[]')
-            ? '\n\nReads every value returned in this list, joined with "; ". Choose a single value if you need exactly one match.'
-            : '';
-        option.title = `${obj.endpoint}: ${obj.field}${note}`;
+        option.title = apiFieldTitle(obj);
 
         return option;
     }
 
-    // Append every discovered field, grouped under its endpoint so the endpoint
-    // name appears once as a heading rather than on every line. Grouping does
-    // not affect select.options, which stays flat for selectedIndex lookups.
-    function appendApiFieldOptions(selectEl, fields, onOption) {
-        if (!Array.isArray(fields)) return;
+    // [] takes every value in a list; a role segment such as
+    // principalInvestigator takes only that person's, which is what lets
+    // the field sync without extra handling.
+    function apiFieldTitle(obj) {
+        const note = obj.field.includes('[]')
+            ? '\n\nReads every value returned in this list, joined with "; ". Choose a single value if you need exactly one match.'
+            : '';
+        return `${obj.endpoint}: ${obj.field}${note}`;
+    }
 
-        // Keyed rather than run-length grouped, so an endpoint appears once even
-        // if the discovered fields ever arrive unsorted.
-        const groups = new Map();
+    // ---- API field picker ----
+    // Each mapping row keeps a hidden <select name> as the record of its choice, since checkpoint(),
+    // the lookup prompts and Manage Forms all read a mapping from one. It only ever holds "None"
+    // and the chosen field. Choosing happens in one shared, searchable popover instead of a native
+    // dropdown that repeats every field of every source on every row, which stopped being usable
+    // once a few sources and uploaded tables were configured.
 
-        fields.forEach(obj => {
-            let group = groups.get(obj.endpoint);
-            if (!group) {
-                group = document.createElement('optgroup');
-                group.label = obj.endpoint;
-                selectEl.appendChild(group);
-                groups.set(obj.endpoint, group);
-            }
+    // The most results drawn at once. Search narrows past this; drawing thousands of rows per
+    // keystroke is what we're getting away from.
+    const PICKER_RESULT_LIMIT = 150;
 
+    // Words that say nothing about which field is meant, in labels or in paths (data_value)
+    const PICKER_STOP_WORDS = new Set(['the', 'and', 'for', 'with', 'from', 'of', 'in', 'an', 'among', 'data', 'value']);
+
+    // Static markup only - nothing from a schema or the dictionary goes through innerHTML
+    const PICKER_ICONS = {
+        search: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>',
+        chevron: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m6 9 6 6 6-6"></path></svg>',
+        api: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 18h10a4 4 0 0 0 .5-7.97A6 6 0 0 0 6.1 9.5 4.25 4.25 0 0 0 7 18z"></path></svg>',
+        table: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="16" rx="2"></rect><path d="M3 10h18M9 4v16"></path></svg>',
+    };
+
+    function pickerWords(text) {
+        return String(text || '').replace(/<[^>]*>/g, ' ').toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(word => word.length > 1 && !PICKER_STOP_WORDS.has(word));
+    }
+
+    // Identifies a field across sources, since two endpoints can offer the same path
+    function pickerKey(endpoint, field) {
+        return `${endpoint}\u0000${field}`;
+    }
+
+    // Every API field, with what search and suggestions need worked out once
+    const pickerFields = apiFields.map(obj => ({
+        obj,
+        key: pickerKey(obj.endpoint, obj.field),
+        display: apiFieldDisplay(obj.field),
+        isTable: String(obj.source).startsWith('table:'),
+        haystack: `${obj.field} ${obj.endpoint}`.toLowerCase(),
+        words: new Set(pickerWords(obj.field)),
+    }));
+
+    // Endpoints in the order their fields arrive, for grouping and the filter chips
+    const pickerEndpoints = [...new Set(apiFields.map(obj => obj.endpoint))];
+
+    // How many fields each word appears in, so a word every field of a source shares (data_value)
+    // counts for little and a distinctive one (depression) for a lot
+    const pickerWordCounts = new Map();
+    pickerFields.forEach(f => f.words.forEach(word => {
+        pickerWordCounts.set(word, (pickerWordCounts.get(word) || 0) + 1);
+    }));
+
+    // Words most of a form's fields share - the tract_ in tract_depression_pct, tract_obesity_pct...
+    // A naming convention, not a clue to which API field is meant. Worked out once per form.
+    const pickerFormWords = new Map();
+    function pickerCommonFormWords(formKey) {
+        if (pickerFormWords.has(formKey)) return pickerFormWords.get(formKey);
+
+        const names = Object.keys(dictionary[formKey] || {});
+        const counts = new Map();
+        names.forEach(name => new Set(pickerWords(name)).forEach(word => {
+            counts.set(word, (counts.get(word) || 0) + 1);
+        }));
+        const common = new Set(names.length >= 3
+            ? [...counts].filter(([, count]) => count / names.length >= 0.5).map(([word]) => word)
+            : []);
+
+        pickerFormWords.set(formKey, common);
+        return common;
+    }
+
+    // Up to three fields whose paths share distinctive words with a REDCap field's name and label:
+    // tract_depression_pct, "Depression among adults (%)" -> [measureid=DEPRESSION].data_value.
+    // Ties go to the shorter path, which tends to be the main value rather than a qualifier of it.
+    function pickerSuggestions(redcapField, formKey) {
+        const info = (dictionary[formKey] || {})[redcapField] || {};
+        const common = pickerCommonFormWords(formKey);
+        const wanted = [...new Set([...pickerWords(redcapField), ...pickerWords(info.field_label)])]
+            .filter(word => !common.has(word));
+        const total = pickerFields.length;
+        if (!wanted.length || !total) return [];
+
+        // Enough that one distinctive shared word counts and a loosely common one doesn't, scaled
+        // down for a source small enough that no word can be very rare
+        const threshold = Math.min(2, Math.log(total) / 2);
+        const scored = [];
+        pickerFields.forEach(f => {
+            let score = 0;
+            f.words.forEach(word => {
+                const count = pickerWordCounts.get(word);
+                if (count / total >= 0.5) return;
+                // Whole words, or one starting the other: "lower" in a label finds low_confidence_limit
+                const shorter = (a, b) => a.length >= 3 && b.startsWith(a);
+                if (wanted.some(w => w === word || shorter(w, word) || shorter(word, w))) {
+                    score += Math.log(total / count);
+                }
+            });
+            if (score >= threshold) scored.push({f, score});
+        });
+
+        return scored
+            .sort((a, b) => b.score - a.score || a.f.obj.field.length - b.f.obj.field.length)
+            .slice(0, 3)
+            .map(entry => entry.f);
+    }
+
+    // Puts a field (or nothing) into a row's hidden select, the way a choice in the old dropdown did
+    function setPickerValue(select, obj) {
+        select.textContent = '';
+        const none = document.createElement('option');
+        none.value = '';
+        none.textContent = 'None';
+        select.appendChild(none);
+
+        if (obj) {
             const option = apiFieldOption(obj);
-            if (onOption) onOption(option, obj);
-            group.appendChild(option);
+            option.selected = true;
+            select.appendChild(option);
+        } else {
+            none.selected = true;
+        }
+    }
+
+    function selectedPickerKey(select) {
+        const option = select.options[select.selectedIndex];
+        return option && option.value ? pickerKey(option.dataset.endpoint, option.value) : '';
+    }
+
+    function pickerBadge(field) {
+        const badge = document.createElement('span');
+        badge.className = 'adif-picker-badge';
+        badge.title = field.obj.endpoint;
+        badge.insertAdjacentHTML('beforeend', field.isTable ? PICKER_ICONS.table : PICKER_ICONS.api);
+        const text = document.createElement('span');
+        text.className = 'adif-picker-badge-text';
+        text.textContent = field.obj.endpoint;
+        badge.appendChild(text);
+        return badge;
+    }
+
+    // Appends text with each search term wrapped in <mark>, built from text nodes so a path or
+    // endpoint name is never read as markup
+    function appendHighlighted(parent, text, tokens) {
+        const lower = text.toLowerCase();
+        const ranges = [];
+        tokens.forEach(token => {
+            let from = 0;
+            let at;
+            while ((at = lower.indexOf(token, from)) !== -1) {
+                ranges.push([at, at + token.length]);
+                from = at + token.length;
+            }
+        });
+        ranges.sort((a, b) => a[0] - b[0]);
+
+        let position = 0;
+        ranges.forEach(([start, end]) => {
+            if (end <= position) return;
+            start = Math.max(start, position);
+            if (start > position) parent.append(text.slice(position, start));
+            const mark = document.createElement('mark');
+            mark.textContent = text.slice(start, end);
+            parent.appendChild(mark);
+            position = end;
+        });
+        if (position < text.length) parent.append(text.slice(position));
+    }
+
+    // The button that stands in for a row's dropdown: where the value comes from, and which field
+    function renderPickerTrigger(trigger, select) {
+        trigger.textContent = '';
+        const key = selectedPickerKey(select);
+        const field = key ? pickerFields.find(f => f.key === key) : null;
+
+        if (!field) {
+            trigger.classList.add('is-empty');
+            trigger.insertAdjacentHTML('beforeend', PICKER_ICONS.search);
+            const text = document.createElement('span');
+            text.className = 'adif-picker-value';
+            text.textContent = 'Search fields…';
+            trigger.appendChild(text);
+            trigger.title = '';
+            trigger.setAttribute('aria-label', `API field for ${select.name}: not mapped`);
+            return;
+        }
+
+        trigger.classList.remove('is-empty');
+        trigger.appendChild(pickerBadge(field));
+        const value = document.createElement('span');
+        value.className = 'adif-picker-value';
+        value.textContent = field.display;
+        trigger.appendChild(value);
+        trigger.insertAdjacentHTML('beforeend', PICKER_ICONS.chevron);
+        trigger.title = apiFieldTitle(field.obj);
+        trigger.setAttribute('aria-label', `API field for ${select.name}: ${field.obj.endpoint}, ${field.obj.field}`);
+    }
+
+    // Turns a row's <select name> into the picker. savedMapping is { mapping, endpoint } as saved;
+    // endpoint is included to disambiguate common paths, while old mappings without one still load.
+    function attachApiFieldPicker(select, formKey, savedMapping) {
+        // The last match, as the old dropdown's selected option was
+        const saved = savedMapping && savedMapping.mapping
+            ? apiFields.filter(obj => obj.field === savedMapping.mapping
+                && (!savedMapping.endpoint || savedMapping.endpoint === obj.endpoint)).pop()
+            : null;
+        setPickerValue(select, saved || null);
+        select.hidden = true;
+        select.dataset.form = formKey;
+
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'adif-picker-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        // The row's <label for> now points at the button
+        if (select.id) {
+            trigger.id = select.id;
+            select.id = `${select.id}__value`;
+        }
+        select.after(trigger);
+        renderPickerTrigger(trigger, select);
+
+        trigger.addEventListener('click', () => openApiFieldPicker(select, trigger));
+        trigger.addEventListener('keydown', event => {
+            // Arrow down opens it; typing a letter opens it already searching for that letter
+            const typed = event.key.length === 1 && event.key !== ' '
+                && !event.ctrlKey && !event.metaKey && !event.altKey;
+            if (event.key === 'ArrowDown' || typed) {
+                event.preventDefault();
+                openApiFieldPicker(select, trigger, typed ? event.key : '');
+            }
         });
     }
+
+    let picker = null;
+
+    function buildPicker() {
+        if (picker) return picker;
+
+        const el = document.createElement('div');
+        el.className = 'adif-picker';
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-label', 'Choose an API field');
+        el.hidden = true;
+
+        const search = document.createElement('label');
+        search.className = 'adif-picker-search';
+        search.insertAdjacentHTML('beforeend', PICKER_ICONS.search);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = `Search ${pickerFields.length.toLocaleString()} fields`;
+        input.setAttribute('role', 'combobox');
+        input.setAttribute('aria-autocomplete', 'list');
+        input.setAttribute('aria-expanded', 'true');
+        input.setAttribute('aria-controls', 'adif-picker-list');
+        search.appendChild(input);
+
+        const chips = document.createElement('div');
+        chips.className = 'adif-picker-chips';
+        chips.setAttribute('role', 'group');
+        chips.setAttribute('aria-label', 'Filter by source');
+
+        const list = document.createElement('div');
+        list.className = 'adif-picker-list';
+        list.id = 'adif-picker-list';
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('aria-label', 'API fields');
+
+        const lookup = document.createElement('div');
+        lookup.className = 'adif-picker-lookup';
+        lookup.hidden = true;
+
+        const footer = document.createElement('div');
+        footer.className = 'adif-picker-footer';
+        const keys = document.createElement('span');
+        keys.textContent = '↑ ↓ to move · Enter to choose · Esc to close';
+        const count = document.createElement('span');
+        footer.append(keys, count);
+
+        el.append(search, chips, list, lookup, footer);
+        document.body.appendChild(el);
+
+        picker = {el, input, chips, list, lookup, count, select: null, trigger: null,
+            endpoint: null, suggestions: [], items: [], active: -1};
+
+        input.addEventListener('input', () => renderPicker(false));
+        input.addEventListener('keydown', event => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                if (!picker.items.length) return;
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                const next = Math.min(picker.items.length - 1, Math.max(0, picker.active + step));
+                setPickerActive(next, true);
+            } else if (event.key === 'Enter') {
+                event.preventDefault();
+                choosePickerItem(picker.active);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeApiFieldPicker(true);
+            } else if (event.key === 'Tab') {
+                closeApiFieldPicker(false);
+            }
+        });
+
+        return picker;
+    }
+
+    function openApiFieldPicker(select, trigger, initialQuery = '') {
+        const p = buildPicker();
+        if (p.trigger === trigger) {
+            closeApiFieldPicker(true);
+            return;
+        }
+        closeApiFieldPicker(false);
+
+        p.select = select;
+        p.trigger = trigger;
+        p.endpoint = null;
+        p.suggestions = pickerSuggestions(select.name, select.dataset.form);
+        p.input.value = initialQuery;
+        p.input.setAttribute('aria-label', `Search API fields for ${select.name}`);
+        trigger.setAttribute('aria-expanded', 'true');
+        trigger.classList.add('is-open');
+        p.el.hidden = false;
+
+        renderPicker(true);
+        positionPicker();
+        p.input.focus();
+    }
+
+    function closeApiFieldPicker(returnFocus) {
+        const p = picker;
+        if (!p || !p.trigger) return;
+
+        p.el.hidden = true;
+        p.trigger.setAttribute('aria-expanded', 'false');
+        p.trigger.classList.remove('is-open');
+        if (returnFocus && p.trigger.isConnected) p.trigger.focus();
+        p.trigger = null;
+        p.select = null;
+    }
+
+    function renderPicker(onOpen) {
+        const p = picker;
+        const query = p.input.value.trim().toLowerCase();
+        const tokens = query.split(/\s+/).filter(Boolean);
+        const matching = tokens.length
+            ? pickerFields.filter(f => tokens.every(token => f.haystack.includes(token)))
+            : pickerFields;
+
+        // Source chips, with how many fields in each match the search. Not worth showing for one.
+        p.chips.textContent = '';
+        p.chips.hidden = pickerEndpoints.length < 2;
+        if (!p.chips.hidden) {
+            const counts = new Map();
+            matching.forEach(f => counts.set(f.obj.endpoint, (counts.get(f.obj.endpoint) || 0) + 1));
+
+            const chip = (label, endpoint, count) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'adif-picker-chip';
+                button.textContent = `${label} · ${count.toLocaleString()}`;
+                button.title = label;
+                button.setAttribute('aria-pressed', p.endpoint === endpoint ? 'true' : 'false');
+                if (count === 0 && p.endpoint !== endpoint) button.classList.add('is-empty');
+                // Keep focus in the search box while clicking
+                button.addEventListener('mousedown', event => event.preventDefault());
+                button.addEventListener('click', () => {
+                    p.endpoint = p.endpoint === endpoint ? null : endpoint;
+                    renderPicker(false);
+                });
+                p.chips.appendChild(button);
+            };
+            chip('All sources', null, matching.length);
+            pickerEndpoints.forEach(endpoint => chip(endpoint, endpoint, counts.get(endpoint) || 0));
+        }
+
+        const shown = p.endpoint ? matching.filter(f => f.obj.endpoint === p.endpoint) : matching;
+        const shownSet = new Set(shown);
+        const currentKey = selectedPickerKey(p.select);
+
+        p.list.textContent = '';
+        p.items = [];
+
+        const group = (label, count) => {
+            const wrapper = document.createElement('div');
+            wrapper.setAttribute('role', 'group');
+            const heading = document.createElement('div');
+            heading.className = 'adif-picker-group-label';
+            heading.id = `adif-picker-group-${p.list.children.length}`;
+            heading.textContent = count === undefined ? label : `${label} · ${count.toLocaleString()}`;
+            wrapper.setAttribute('aria-labelledby', heading.id);
+            wrapper.appendChild(heading);
+            p.list.appendChild(wrapper);
+            return wrapper;
+        };
+
+        const addOption = (field, parent, withBadge) => {
+            const index = p.items.length;
+            const option = document.createElement('div');
+            option.id = `adif-picker-option-${index}`;
+            option.className = 'adif-picker-option';
+            option.setAttribute('role', 'option');
+
+            const main = document.createElement('span');
+            main.className = 'adif-picker-option-main';
+            option.appendChild(main);
+
+            if (!field) {
+                option.classList.add('is-clear');
+                option.setAttribute('aria-selected', 'false');
+                main.textContent = 'No mapping';
+            } else {
+                const isCurrent = field.key === currentKey;
+                option.setAttribute('aria-selected', isCurrent ? 'true' : 'false');
+                option.title = apiFieldTitle(field.obj);
+                if (withBadge) main.appendChild(pickerBadge(field));
+                const display = document.createElement('span');
+                display.className = 'adif-picker-option-display';
+                appendHighlighted(display, field.display, tokens);
+                main.appendChild(display);
+                if (isCurrent) {
+                    const current = document.createElement('span');
+                    current.className = 'adif-picker-current';
+                    current.textContent = 'Current';
+                    main.appendChild(current);
+                }
+
+                // The full path, which the shortened display leaves out the middle of
+                if (field.display !== field.obj.field) {
+                    const path = document.createElement('span');
+                    path.className = 'adif-picker-option-path';
+                    appendHighlighted(path, field.obj.field, tokens);
+                    option.appendChild(path);
+                }
+            }
+
+            // mousedown would move focus out of the search box and close the picker
+            option.addEventListener('mousedown', event => event.preventDefault());
+            option.addEventListener('click', () => choosePickerItem(index));
+            option.addEventListener('mousemove', () => {
+                if (p.active !== index) setPickerActive(index, false);
+            });
+
+            p.items.push(field);
+            parent.appendChild(option);
+        };
+
+        if (!tokens.length && currentKey) {
+            addOption(null, p.list, false);
+        }
+
+        const suggested = p.suggestions.filter(f => shownSet.has(f));
+        if (suggested.length) {
+            const suggestedGroup = group(`Suggested for ${p.select.name}`);
+            suggested.forEach(f => addOption(f, suggestedGroup, true));
+        }
+
+        // Everything else grouped under its endpoint, so the endpoint name appears once as a heading
+        const suggestedSet = new Set(suggested);
+        const byEndpoint = new Map();
+        shown.forEach(f => {
+            if (suggestedSet.has(f)) return;
+            if (!byEndpoint.has(f.obj.endpoint)) byEndpoint.set(f.obj.endpoint, []);
+            byEndpoint.get(f.obj.endpoint).push(f);
+        });
+
+        let drawn = suggested.length;
+        for (const [endpoint, fields] of byEndpoint) {
+            if (drawn >= PICKER_RESULT_LIMIT) break;
+            const endpointGroup = group(endpoint, fields.length);
+            for (const f of fields) {
+                if (drawn >= PICKER_RESULT_LIMIT) break;
+                addOption(f, endpointGroup, false);
+                drawn++;
+            }
+        }
+
+        if (!shown.length) {
+            const empty = document.createElement('div');
+            empty.className = 'adif-picker-empty';
+            empty.textContent = tokens.length
+                ? `No fields match “${p.input.value.trim()}”${p.endpoint ? ` in ${p.endpoint}` : ''}.`
+                : 'No fields are available from this source.';
+            p.list.appendChild(empty);
+        }
+
+        if (drawn < shown.length) {
+            p.count.textContent = `Showing ${drawn.toLocaleString()} of ${shown.length.toLocaleString()} — type to narrow`;
+        } else if (tokens.length || p.endpoint) {
+            p.count.textContent = `${shown.length.toLocaleString()} of ${pickerFields.length.toLocaleString()} fields`;
+        } else {
+            p.count.textContent = `${pickerFields.length.toLocaleString()} fields`;
+        }
+
+        // Start on the current mapping when opening, else the best suggestion; while typing,
+        // on the first result. "No mapping" is only ever chosen on purpose.
+        const firstField = p.items.findIndex(f => f !== null);
+        let active = firstField;
+        if (onOpen) {
+            const current = p.items.findIndex(f => f && f.key === currentKey);
+            if (current !== -1) active = current;
+        }
+        setPickerActive(active === -1 ? (p.items.length ? 0 : -1) : active, onOpen);
+        if (!onOpen) p.list.scrollTop = 0;
+    }
+
+    function setPickerActive(index, scroll) {
+        const p = picker;
+        p.list.querySelectorAll('.adif-picker-option.is-active').forEach(el => el.classList.remove('is-active'));
+        p.active = index;
+
+        const option = index >= 0 ? document.getElementById(`adif-picker-option-${index}`) : null;
+        if (option) {
+            option.classList.add('is-active');
+            p.input.setAttribute('aria-activedescendant', option.id);
+            if (scroll) option.scrollIntoView({block: 'nearest'});
+        } else {
+            p.input.removeAttribute('aria-activedescendant');
+        }
+        renderPickerLookup(index >= 0 ? p.items[index] : null);
+    }
+
+    // Under the results: what the highlighted field's endpoint sends to find a record, and
+    // where that value will come from
+    function renderPickerLookup(field) {
+        const p = picker;
+        p.lookup.textContent = '';
+        const placeholders = field ? field.obj.lookups || [] : [];
+        p.lookup.hidden = !placeholders.length;
+        if (!placeholders.length) return;
+
+        p.lookup.append('Finds records by ');
+        placeholders.forEach((placeholder, i) => {
+            if (i > 0) p.lookup.append(i === placeholders.length - 1 ? ' and ' : ', ');
+            const code = document.createElement('code');
+            code.textContent = `[${placeholder}]`;
+            p.lookup.appendChild(code);
+            const from = lookupFieldFor(field.obj.source, placeholder);
+            p.lookup.append(from ? ` from ${from}` : ' (you’ll be asked which field holds it)');
+        });
+        p.lookup.append('.');
+    }
+
+    function choosePickerItem(index) {
+        const p = picker;
+        if (!p || !p.select || index < 0 || index >= p.items.length) return;
+
+        const field = p.items[index];
+        const select = p.select;
+        const trigger = p.trigger;
+        const before = selectedPickerKey(select);
+
+        setPickerValue(select, field ? field.obj : null);
+        renderPickerTrigger(trigger, select);
+        closeApiFieldPicker(true);
+
+        // The page's change handler saves, and asks for a lookup field when one is missing
+        if (selectedPickerKey(select) !== before) {
+            select.dispatchEvent(new Event('change', {bubbles: true}));
+        }
+    }
+
+    // Under the trigger, right edges lined up since the API field column is the last one; above
+    // it when there isn't room below
+    function positionPicker() {
+        const p = picker;
+        if (!p || !p.trigger) return;
+
+        const margin = 8;
+        const rect = p.trigger.getBoundingClientRect();
+        const width = Math.min(Math.max(rect.width, 520), window.innerWidth - margin * 2);
+        let left = Math.min(rect.right - width, window.innerWidth - margin - width);
+        left = Math.max(margin, left);
+
+        const below = window.innerHeight - rect.bottom - margin;
+        const above = rect.top - margin;
+        const openUp = below < 280 && above > below;
+        p.el.style.width = `${width}px`;
+        p.el.style.left = `${left + window.scrollX}px`;
+        p.el.style.maxHeight = `${Math.max(220, Math.min(480, (openUp ? above : below) - 6))}px`;
+        p.el.style.top = openUp
+            ? `${rect.top + window.scrollY - 6 - p.el.offsetHeight}px`
+            : `${rect.bottom + window.scrollY + 6}px`;
+    }
+
+    document.addEventListener('mousedown', event => {
+        if (!picker || !picker.trigger) return;
+        if (picker.el.contains(event.target) || picker.trigger.contains(event.target)) return;
+        closeApiFieldPicker(false);
+    });
+    window.addEventListener('resize', positionPicker);
 </script>
 
 <div class="d-flex container" style="flex-direction: column;">
@@ -353,8 +928,7 @@ $projectTitle = \REDCap::getProjectTitle();
                 </td>
             `;
 
-                    const selectEl = row.querySelector('select');
-                    appendApiFieldOptions(selectEl, apiFields);
+                    attachApiFieldPicker(row.querySelector('select'), selectedForm, null);
 
                     tbody.appendChild(row);
                     i++;
@@ -566,17 +1140,7 @@ $projectTitle = \REDCap::getProjectTitle();
 
                 tbody.appendChild(row);
 
-                // Populate select with apiFields
-                const selectEl = row.querySelector('select');
-                const savedMapping = mappedFields[redcapField] || {};
-                appendApiFieldOptions(selectEl, apiFields, (option, obj) => {
-                    // Endpoint is included to disambiguate common paths,
-                    // while old mappings without an endpoint still load.
-                    if (savedMapping.mapping === obj.field
-                        && (!savedMapping.endpoint || savedMapping.endpoint === obj.endpoint)) {
-                        option.selected = true;
-                    }
-                });
+                attachApiFieldPicker(row.querySelector('select'), instrumentKey, mappedFields[redcapField] || null);
 
                 fragment.appendChild(table);
                 i++;
