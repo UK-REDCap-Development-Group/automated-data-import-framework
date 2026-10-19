@@ -6,8 +6,13 @@
 /** @var \UKModules\ADIF\ADIF $module */
 
 $sources = $module->getApiSources();
+// Uploaded tables are queried here too, as "table:<id>" sources (see classes/DataTables.php)
+$tables = $module->getDataTables();
 
 $selectedIndex = isset($_POST['source_index']) ? $_POST['source_index'] : (string) (!empty($sources) ? $sources[0]['index'] : '');
+if ($selectedIndex === '' && !empty($tables)) {
+    $selectedIndex = $module->dataTableSource(array_key_first($tables));
+}
 $method = isset($_POST['method']) ? strtoupper($_POST['method']) : 'GET';
 $path = isset($_POST['path']) ? $_POST['path'] : '';
 $payloadRaw = isset($_POST['payload']) ? $_POST['payload'] : '';
@@ -32,6 +37,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sourceExists = true;
                 break;
             }
+        }
+
+        if ($module->isDataTableSource($selectedIndex)) {
+            $sourceExists = isset($tables[substr($selectedIndex, strlen('table:'))]);
         }
 
         if (!$sourceExists) {
@@ -77,10 +86,11 @@ function adif_flatten_headers($headers)
     <p>Send a request through a configured API source and inspect exactly what comes back &mdash; status, headers,
         timing, and body. This page is for manual testing only.</p>
 
-    <?php if (empty($sources)): ?>
+    <?php if (empty($sources) && empty($tables)): ?>
         <div class="adif-alert adif-alert-empty">
             No API sources are configured for this project yet. Add one under the module's project configuration
-            ("Input the base URLs of any APIs which you would like to make available to your project").
+            ("Input the base URLs of any APIs which you would like to make available to your project"), or upload
+            a table on the <a href="<?= htmlspecialchars($module->getUrl('pages/Data_Tables.php')) ?>">Data Tables</a> page.
         </div>
     <?php else: ?>
 
@@ -99,6 +109,18 @@ function adif_flatten_headers($headers)
                                 <?= htmlspecialchars($source['url']) ?>
                             </option>
                         <?php endforeach; ?>
+                        <?php if (!empty($tables)): ?>
+                            <optgroup label="Data tables (GET only, queried as ?column=value)">
+                                <?php foreach ($tables as $table): ?>
+                                    <?php $tableSource = $module->dataTableSource($table['id']); ?>
+                                    <option value="<?= htmlspecialchars($tableSource) ?>"
+                                            data-example="<?= htmlspecialchars('?' . rawurlencode($table['key_column']) . '=') ?>"
+                                        <?= ($tableSource === (string) $selectedIndex) ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($table['name']) ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </optgroup>
+                        <?php endif; ?>
                     </select>
                 </div>
                 <div class="adif-form-field adif-method">
@@ -200,6 +222,19 @@ function adif_flatten_headers($headers)
 
 <script>
     (function () {
+        // Choosing a table starts its path off as a query on the column it's looked up by
+        var sourceSelect = document.getElementById('adif-source');
+        var pathInput = document.getElementById('adif-path');
+        if (sourceSelect && pathInput) {
+            sourceSelect.addEventListener('change', function () {
+                var example = sourceSelect.options[sourceSelect.selectedIndex].getAttribute('data-example');
+                if (example && pathInput.value.trim() === '') {
+                    pathInput.value = example;
+                    pathInput.focus();
+                }
+            });
+        }
+
         var buttons = document.querySelectorAll('.adif-tab-btn');
         buttons.forEach(function (btn) {
             btn.addEventListener('click', function () {
