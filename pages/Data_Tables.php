@@ -7,6 +7,9 @@
 
 /** @var \UKModules\ADIF\ADIF $module */
 
+// Now you can safely render your page
+require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
+
 $pid = $module->getProjectId();
 $canManage = $module->canConfigureApiSources($pid);
 
