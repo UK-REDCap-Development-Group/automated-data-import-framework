@@ -1,0 +1,145 @@
+/* The Data Tables page (pages/Data_Tables.php). Builds on test_page.css for alerts and form rows. */
+
+.adif-dt-page {
+    max-width: 1040px;
+}
+
+.adif-dt-card {
+    border: 1px solid #dde2e6;
+    border-radius: 6px;
+    padding: 14px 18px;
+    margin: 16px 0;
+    background: #fff;
+}
+
+.adif-dt-card h4 {
+    margin: 0 0 6px;
+}
+
+.adif-dt-upload {
+    background: #f8fafb;
+}
+
+.adif-dt-hint {
+    color: #556;
+    font-size: 0.85em;
+    margin: 6px 0 0;
+}
+
+.adif-dt-success {
+    background: #e3f7e8;
+    border: 1px solid #b9e4c4;
+    color: #1e5b2e;
+}
+
+.adif-dt-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    color: #667;
+    font-size: 0.85em;
+    margin-bottom: 10px;
+}
+
+.adif-dt-summary {
+    margin: 0 0 12px;
+}
+
+.adif-dt-summary code,
+.adif-dt-check code,
+.adif-dt-hint code {
+    font-size: 0.9em;
+    background: #f1f3f5;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #333;
+}
+
+.adif-dt-settings {
+    border-top: 1px solid #eef0f2;
+    padding-top: 12px;
+}
+
+.adif-dt-check {
+    display: block;
+    font-weight: normal;
+    margin: 6px 0;
+}
+
+.adif-dt-check input[type=checkbox],
+.adif-dt-check input[type=radio] {
+    margin-right: 6px;
+}
+
+.adif-dt-check select {
+    padding: 2px 4px;
+    margin: 0 2px;
+    max-width: 240px;
+}
+
+.adif-dt-layout {
+    border: none;
+    padding: 0;
+    margin: 10px 0 12px;
+}
+
+.adif-dt-layout legend {
+    font-weight: 600;
+    font-size: 0.85em;
+    margin-bottom: 2px;
+    border: none;
+    width: auto;
+}
+
+.adif-dt-details {
+    border-top: 1px solid #eef0f2;
+    margin-top: 12px;
+    padding-top: 8px;
+}
+
+.adif-dt-details summary {
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.9em;
+    color: #2a5d8f;
+}
+
+.adif-dt-details[open] summary {
+    margin-bottom: 10px;
+}
+
+.adif-dt-scroll {
+    overflow: auto;
+    max-height: 420px;
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+}
+
+.adif-dt-rows {
+    border-collapse: collapse;
+    font-size: 0.82em;
+    white-space: nowrap;
+}
+
+.adif-dt-rows th,
+.adif-dt-rows td {
+    border-bottom: 1px solid #eef0f2;
+    border-right: 1px solid #eef0f2;
+    padding: 4px 8px;
+    text-align: left;
+}
+
+.adif-dt-rows th {
+    background: #f5f7f8;
+    position: sticky;
+    top: 0;
+}
+
+.adif-dt-rows .adif-dt-key {
+    background: #fff8e1;
+    font-weight: 600;
+}
+
+.adif-dt-delete {
+    margin-top: 10px;
+}

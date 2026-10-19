@@ -4,8 +4,8 @@ namespace UKModules\ADIF;
 /** @var \UKModules\ADIF\ADIF $module */
 
 // Saves which REDCap field supplies each [placeholder] in the API sources' endpoint paths, from the
-// Mapping page's lookup prompt, as { "<source index>": { "<placeholder>": "<field>" } }.
-// Read back by Import::getLookupField.
+// Mapping page's lookup prompt, as { "<source>": { "<placeholder>": "<field>" } }, where a source is
+// an API source's index or an uploaded table's "table:<id>". Read back by Import::getLookupField.
 
 $pid = (int) ($_POST['pid'] ?? 0);
 $lookups = json_decode($_POST['lookups'] ?? '', true);
@@ -19,12 +19,17 @@ if (empty($pid) || !is_array($lookups)) {
 $namePattern = '/^[a-z][a-z0-9_]*$/';
 $clean = [];
 foreach ($lookups as $source => $placeholders) {
-    if (!is_numeric($source) || !is_array($placeholders)) {
+    if (is_numeric($source)) {
+        $source = (string) (int) $source;
+    } elseif (!preg_match('/^table:[a-f0-9]+$/', (string) $source)) {
+        continue;
+    }
+    if (!is_array($placeholders)) {
         continue;
     }
     foreach ($placeholders as $placeholder => $field) {
         if (preg_match($namePattern, (string) $placeholder) && is_string($field) && preg_match($namePattern, $field)) {
-            $clean[(string) (int) $source][$placeholder] = $field;
+            $clean[$source][$placeholder] = $field;
         }
     }
 }

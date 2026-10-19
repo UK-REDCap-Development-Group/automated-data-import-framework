@@ -77,6 +77,9 @@ trait Proxy
             }
         }
 
+        // Uploaded tables (see DataTables), whose source is "table:<id>" rather than an index
+        array_push($apiFields, ...$this->getDataTableFields());
+
         return $apiFields;
     }
 
@@ -102,8 +105,13 @@ trait Proxy
     // Sends a request to a configured API source and returns everything about the exchange
     // (status, headers, timing, raw + decoded body) instead of emitting it, so callers can either
     // echo it straight through (see proxyRequest) or render it (see pages/API_Test.php).
+    // A "table:<id>" source is an uploaded table, answered from its file instead (see DataTables).
     public function dispatchApiRequest($sourceIndex, $apiPath, $method = 'GET', $payload = [])
     {
+        if ($this->isDataTableSource($sourceIndex)) {
+            return $this->queryDataTable($sourceIndex, $apiPath);
+        }
+
         $source = $this->getApiSource($sourceIndex);
 
         return $this->sendApiRequest($source['url'], $source['apiKey'], $apiPath, $method, $payload);
