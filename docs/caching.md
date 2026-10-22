@@ -1,10 +1,19 @@
 # API response caching
 
-ADIF puts a cache in front of every configured API source, so repeated requests
+ADIF can put a cache in front of configured API sources, so repeated requests
 for the same data (two participants in the same census tract, a survey retaken,
-a re-import) are answered locally instead of calling the API again. Whether and
-how each source is cached is up to the project designer, within limits an
-administrator sets.
+a re-import) are answered locally instead of calling the API again.
+
+Caching is opt-in at two levels:
+
+1. An administrator enables API caching for the server (Control Center). While
+   it's off, nothing is cached anywhere and every request goes to the API.
+2. A project designer ticks which of the project's API sources to cache. Each
+   ticked source stores responses as imports request them, and reuses them for
+   identical requests.
+
+A source is cached only when both are on. How it's cached (freshness, sharing,
+failure behaviour) is then up to the designer, within limits the administrator sets.
 
 ## How it fits into the module
 
@@ -46,11 +55,12 @@ tests/cache_smoke.php               php tests/cache_smoke.php  (no REDCap needed
 | Layer | Who | Controls |
 |---|---|---|
 | Provider declaration | code / designer | key sensitivity, widest scope, freshness |
-| System settings | REDCap admin | network kill switch, block identifying egress, disallow "always fetch", max scope |
-| Project settings (per source) | project designer | when to call the API, max age, failure behaviour, data version, sharing |
+| System settings | REDCap admin | caching on/off for the server, max scope |
+| Project settings (per source) | project designer | whether to cache the source; when to call the API, max age, failure behaviour, data version, sharing |
 | Run override | a user action | mode for one run, e.g. a future "Refresh now" button |
 
-**Freshness choices flow down freely. Privacy choices can only narrow.**
+**Caching happens only when every layer allows it. Freshness choices flow down
+freely. Privacy choices can only narrow.**
 Whenever a choice is overridden, the reason is added to the module log under
 `notices` for that import.
 
@@ -66,7 +76,6 @@ always public.
 | Cache key | HMAC of the request path | request path |
 | Stored value | AES-256-GCM encrypted | plain JSON |
 | Widest sharing | within the project | across projects, if keyless and opted in |
-| Admin "block identifying egress" | runs offline | unaffected |
 
 Hashing the key alone isn't enough because responses often echo the input (a
 geocoder returns the matched address), so the value is encrypted too.
@@ -81,11 +90,14 @@ turns existing identifying entries into misses; it doesn't cause errors.
 
 ### Per API source (project configuration dialog)
 
+- **Cache this API's responses** (`cache-enabled`): the project's opt-in for this source. Unticked
+  sources are requested from the API every time and nothing is stored. Ignored (with a notice in
+  the import log) when caching is off for the server. The settings below apply only to cached sources.
 - **When should ADIF call this API?** (`cache-mode`)
   - *Only for data not already stored* (default)
   - *When stored data is older than N days* (`cache-max-age-days`)
-  - *Always fetch the latest data*
-  - *Never: use stored data only*
+  - *Never: use stored data only*. If the source isn't cached, it's requested from the API
+    instead, with a notice.
 - **If this API is unavailable** (`cache-on-failure`): use the last stored value and note it in the log (default), or leave the fields blank and log an error.
 - **Data version** (`data-version`): a free-text label such as `2023`. Changing it makes ADIF fetch fresh data instead of reusing data stored under the old label. Recommended for versioned data, and worth pinning once data collection starts so values don't change mid-study.
 - **Piped values are public codes** (`lookups-are-public`): see above.
@@ -93,15 +105,22 @@ turns existing identifying entries into misses; it doesn't cause errors.
 
 ### Control Center (system)
 
-- `adif-cache-block-network`: offline mode for every project.
-- `adif-cache-block-identifying`: no source may send identifying record values out.
-- `adif-cache-disallow-live`: projects can't choose "Always fetch".
+- `adif-cache-enabled`: enables API caching on this server. Off by default; while it's off,
+  nothing is cached, whatever projects have chosen.
 - `adif-cache-max-scope`: widest sharing allowed on this server.
+
+ADIF doesn't block outbound requests: a source that isn't cached simply calls its API.
 
 ## Behaviour changes from before this branch
 
-- Sources now default to **cache first**. Previously every import called the API.
-  Projects that need fresh data on every import should choose *Always fetch the latest data*.
+- Caching is **opt-in**: nothing is cached until an administrator enables API caching and a project
+  ticks *Cache this API's responses* on a source. Until then every import calls the API, as before.
+  A ticked source defaults to *cache first*.
+- An uncached source is what used to be *Always fetch the latest data*, so that option is gone.
+  A source saved with it behaves the same way once ticked: it always calls the API, and stores the
+  newest response.
+- The earlier `adif-cache-block-network`, `adif-cache-block-identifying` and
+  `adif-cache-disallow-live` system settings were removed.
 - When an API is down and a stored value exists, the stored value is used and a notice is logged,
   where before the fields were left blank.
 - Import log entries gain a `notices` parameter.

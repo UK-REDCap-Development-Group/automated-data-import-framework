@@ -74,7 +74,12 @@ if ($canManage && $_SERVER['REQUEST_METHOD'] === 'POST') {
 $tables = $module->getDataTables();
 $lookups = $module->getProjectSetting('lookup-fields') ?: [];
 $csrf = $module->getCSRFToken();
-$maxUploadMb = round($module->maxDataTableUploadBytes() / 1048576, 1);
+// Storage: each file is capped, and so is the total across the project's tables (system settings)
+$fileLimitBytes = $module->maxDataTableUploadBytes();
+$projectLimitBytes = $module->dataTableProjectLimitBytes();
+$storedBytes = $module->dataTableStoredBytes();
+$spaceLeftBytes = $module->dataTableSpaceLeftBytes();
+$uploadFull = $spaceLeftBytes === 0;
 $delimiterNames = [',' => 'comma', "\t" => 'tab', ';' => 'semicolon', '|' => 'pipe'];
 
 function adif_h($value)
@@ -84,7 +89,7 @@ function adif_h($value)
 
 function adif_bytes($bytes)
 {
-    return $bytes >= 1048576 ? round($bytes / 1048576, 1) . ' MB' : max(1, round($bytes / 1024)) . ' KB';
+    return $bytes >= 1048576 || $bytes == 0 ? round($bytes / 1048576, 1) . ' MB' : max(1, round($bytes / 1024)) . ' KB';
 }
 
 // A small HTML table of rows, columns in file order
@@ -136,14 +141,29 @@ function adif_rows_table($columns, $rows, $highlight = null)
         <h4>Upload a table</h4>
         <div class="adif-form-row">
             <div class="adif-form-field">
-                <label for="adif-dt-file">File (.csv, .tsv or .txt, up to <?= adif_h($maxUploadMb) ?> MB)</label>
-                <input type="file" name="table_file" id="adif-dt-file" accept=".csv,.tsv,.tab,.txt,text/csv,text/tab-separated-values" required>
+                <label for="adif-dt-file">File (.csv, .tsv or .txt, up to <?= adif_h(adif_bytes(min($fileLimitBytes, $spaceLeftBytes))) ?>)</label>
+                <input type="file" name="table_file" id="adif-dt-file" accept=".csv,.tsv,.tab,.txt,text/csv,text/tab-separated-values" required<?= $uploadFull ? ' disabled' : '' ?>>
             </div>
             <div class="adif-form-field">
                 <label for="adif-dt-name">Name (optional; defaults to the file name)</label>
                 <input type="text" name="table_name" id="adif-dt-name" maxlength="100" placeholder="e.g. CDC SVI 2022 - Kentucky tracts">
             </div>
-            <button type="submit" class="btn btn-primaryrc">Upload</button>
+            <button type="submit" class="btn btn-primaryrc"<?= $uploadFull ? ' disabled' : '' ?>>Upload</button>
+        </div>
+        <?php $usedShare = $projectLimitBytes > 0 ? min(1, $storedBytes / $projectLimitBytes) : 1; ?>
+        <div class="adif-dt-usage<?= $usedShare >= 0.9 ? ' is-near-full' : '' ?>">
+            <div class="adif-dt-usage-bar" aria-hidden="true"><span style="width: <?= round($usedShare * 100, 1) ?>%"></span></div>
+            <p>
+                <?php if ($uploadFull): ?>
+                    This project's tables use all <?= adif_h(adif_bytes($projectLimitBytes)) ?> of the storage it's allowed
+                    (<?= adif_h(adif_bytes($storedBytes)) ?> in use). Delete or replace a table that's no longer needed to
+                    upload another, or ask a REDCap administrator to raise the limit.
+                <?php else: ?>
+                    This project's tables use <?= adif_h(adif_bytes($storedBytes)) ?> of the
+                    <?= adif_h(adif_bytes($projectLimitBytes)) ?> they're allowed, leaving <?= adif_h(adif_bytes($spaceLeftBytes)) ?>.
+                    Each file can be up to <?= adif_h(adif_bytes($fileLimitBytes)) ?>.
+                <?php endif; ?>
+            </p>
         </div>
         <p class="adif-dt-hint">The first row must name the columns. Comma, tab, semicolon and pipe separated files are
             all read. For an Excel workbook, save the sheet as CSV first. The name can't be changed later, since
@@ -288,7 +308,8 @@ function adif_rows_table($columns, $rows, $highlight = null)
                     <input type="hidden" name="adif_action" value="replace">
                     <input type="hidden" name="table_id" value="<?= adif_h($id) ?>">
                     <div class="adif-form-field">
-                        <label for="adif-replace-<?= adif_h($id) ?>">Upload a new version (keeps the name, settings and mappings)</label>
+                        <label for="adif-replace-<?= adif_h($id) ?>">Upload a new version (keeps the name, settings and
+                            mappings; up to <?= adif_h(adif_bytes(min($fileLimitBytes, $module->dataTableSpaceLeftBytes($id)))) ?>)</label>
                         <input type="file" name="table_file" id="adif-replace-<?= adif_h($id) ?>" accept=".csv,.tsv,.tab,.txt,text/csv,text/tab-separated-values" required>
                     </div>
                     <button type="submit" class="btn btn-defaultrc btn-sm">Replace file</button>

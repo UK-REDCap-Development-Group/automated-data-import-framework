@@ -86,8 +86,8 @@ trait Import
             $apiPath = $request['path'];
             try {
                 $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary);
-                // Goes through the cache (see ApiCache): depending on the source's settings this may be
-                // answered locally, sent to the API, or refused (e.g. offline mode).
+                // Goes through the cache (see ApiCache): when the server and the project both cache this
+                // source it may be answered locally; otherwise it's sent to the API.
                 $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath);
             } catch (\Throwable $e) {
                 $summary['errors'][] = "$apiPath: " . $e->getMessage();
