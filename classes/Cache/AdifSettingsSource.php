@@ -5,14 +5,17 @@ namespace UKModules\ADIF\Cache;
  * Reads cache choices from ADIF's own config.json settings.
  *
  * System (Control Center) settings apply to every source:
- *   adif-cache-block-network      checkbox  – offline mode for every project
- *   adif-cache-block-identifying  checkbox  – no source may send identifying record values out
- *   adif-cache-disallow-live      checkbox  – projects can't choose "Always fetch"
+ *   adif-cache-enabled            checkbox  – whether anything is cached on this server
  *   adif-cache-max-scope          dropdown  – record | project | system
  *
  * Project settings are sub-settings of the repeatable "api-sources" group, so
  * each comes back as an array indexed by source position:
- *   cache-mode, cache-max-age-days, cache-on-failure, cache-scope
+ *   cache-enabled (the project's opt-in for that source), cache-mode,
+ *   cache-max-age-days, cache-on-failure, cache-scope
+ *
+ * Caching is opt-in at both levels: a source is cached only when the server
+ * has caching enabled AND the project ticked that source. ADIF doesn't block
+ * outbound requests, so network access and identifying egress are always allowed.
  * (lookups-are-public and data-version are read by ConfiguredApiProvider.)
  */
 final class AdifSettingsSource implements SettingsSource
@@ -30,14 +33,10 @@ final class AdifSettingsSource implements SettingsSource
         $m = $this->module;
         return match ($key) {
             'enabled'                  => true,
-            'allow_network'            => !$m->getSystemSetting('adif-cache-block-network'),
-            // Existing projects already send piped values out, so egress stays allowed unless an
-            // admin turns it off. The project-level acknowledgement is how the source is classified.
-            'allow_identifying_egress' => !$m->getSystemSetting('adif-cache-block-identifying'),
-            'allowed_modes'            => array_values(array_filter(
-                array_column(FetchMode::cases(), 'value'),
-                fn($v) => !($v === FetchMode::Live->value && $m->getSystemSetting('adif-cache-disallow-live'))
-            )),
+            'caching_enabled'          => (bool) $m->getSystemSetting('adif-cache-enabled'),
+            'allow_network'            => true,
+            'allow_identifying_egress' => true,
+            'allowed_modes'            => array_column(FetchMode::cases(), 'value'),
             'max_scope'                => $m->getSystemSetting('adif-cache-max-scope') ?: null,
             default                    => $default,
         };
@@ -54,6 +53,7 @@ final class AdifSettingsSource implements SettingsSource
             return true;
         }
         $setting = [
+            'caching_enabled' => 'cache-enabled',
             'mode'         => 'cache-mode',
             'max_age_days' => 'cache-max-age-days',
             'failure_mode' => 'cache-on-failure',
@@ -67,6 +67,10 @@ final class AdifSettingsSource implements SettingsSource
             (array) ($this->module->getProjectSetting($setting, $projectId) ?: []);
         $value = $this->projectCache[$projectId][$setting][$index] ?? null;
 
+        if ($key === 'caching_enabled') {
+            // Unticked (or never saved) means not cached
+            return !empty($value);
+        }
         if ($value === null || $value === '') {
             // Sharing across projects is opt-in, even for public data.
             return $key === 'cache_scope' ? CachePolicy::SCOPE_PROJECT : $default;

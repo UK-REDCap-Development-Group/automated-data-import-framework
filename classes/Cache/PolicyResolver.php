@@ -14,10 +14,15 @@ use UKModules\ADIF\Cache\Provider\DataProvider;
  * Freshness choices (mode, max age, version) are user preferences and flow
  * downward normally. Privacy choices (network egress, scope) can only narrow.
  *
+ * Caching itself is on only when the provider's declaration, the admin
+ * (system caching_enabled) and the project (project caching_enabled) all allow
+ * it. With caching off, nothing is read from or written to storage, so every
+ * request goes to the provider.
+ *
  * Setting keys (per provider):
- *   system:  enabled, allow_network, allow_identifying_egress,
+ *   system:  enabled, caching_enabled, allow_network, allow_identifying_egress,
  *            allowed_modes (string[]), default_mode, max_scope
- *   project: mode, max_age_days, failure_mode, version,
+ *   project: caching_enabled, mode, max_age_days, failure_mode, version,
  *            allow_identifying_egress, cache_scope
  */
 final class PolicyResolver
@@ -33,6 +38,20 @@ final class PolicyResolver
 
         if (!$this->settings->system($id, 'enabled', true)) {
             throw new PolicyViolation("Provider '$id' is disabled by the administrator.");
+        }
+
+        // ---- Caching on/off -----------------------------------------------
+        $cachingEnabled = $ceiling->freshness !== CachePolicy::FRESHNESS_NONE;
+        $projectCaching = (bool) $this->settings->project($pid, $id, 'caching_enabled', true);
+        if ($cachingEnabled && !$this->settings->system($id, 'caching_enabled', true)) {
+            if ($projectCaching) {
+                // The project asked for caching; say why it isn't happening
+                $notices[] = 'API caching is turned off on this server, so this source is requested from the '
+                    . 'API every time and nothing is stored.';
+            }
+            $cachingEnabled = false;
+        } elseif (!$projectCaching) {
+            $cachingEnabled = false;
         }
 
         // ---- Mode ---------------------------------------------------------
@@ -57,6 +76,12 @@ final class PolicyResolver
                 $notices[] = "Project mode '{$mode->value}' is no longer allowed; using '{$adminDefault->value}'.";
                 $mode = $adminDefault;
             }
+        }
+
+        // Without a cache there's no stored data to run offline from
+        if (!$cachingEnabled && $mode === FetchMode::Offline) {
+            $notices[] = 'This source is set to use stored data only, but it isn\'t cached, so it is requested from the API.';
+            $mode = FetchMode::CacheFirst;
         }
 
         // ---- Network egress gates (privacy: can only narrow) --------------
@@ -89,11 +114,10 @@ final class PolicyResolver
         }
 
         // ---- Freshness ----------------------------------------------------
-        $cachingEnabled = $ceiling->freshness !== CachePolicy::FRESHNESS_NONE;
         $maxAgeDays     = $this->settings->project($pid, $id, 'max_age_days');
         $maxAge         = $maxAgeDays !== null ? (int) $maxAgeDays * 86400 : $ceiling->ttlSeconds;
         if ($mode === FetchMode::RefreshIfStale && $maxAge === null) {
-            if ($ceiling->freshness === CachePolicy::FRESHNESS_IMMUTABLE) {
+            if ($cachingEnabled && $ceiling->freshness === CachePolicy::FRESHNESS_IMMUTABLE) {
                 $notices[] = 'This source is versioned and never goes stale; "refresh if stale" behaves like "cache first". '
                     . 'Choose a newer version, or "Always fetch", to get new data.';
             }

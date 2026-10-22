@@ -197,7 +197,10 @@ $sender = function ($url, $key, $path) use (&$sent) {
     return ['success' => true, 'requestUrl' => $url . $path, 'bodyJson' => [['value' => 7, 'path' => $path]]];
 };
 
+// Caching is opt-in on the server and per source, so these tests turn both on unless they say otherwise
 function adif(array $sys, array $proj, array $providers, &$store): CacheManager {
+    $sys  += ['adif-cache-enabled' => true];
+    $proj += ['cache-enabled' => [0 => true, 1 => true, 2 => true]];
     $store = new InMemoryStorage();
     $reg = new ProviderRegistry(); $map = [];
     foreach ($providers as $p) { $reg->register($p); $map[$p->id()] = $p->sourceIndex(); }
@@ -241,22 +244,49 @@ $r = $m->fetch($geocode->id(), ['r' => ['path' => '?address=123%20Main%20St']], 
 check('encrypted entry decrypts on a later hit (other record, same project)', $r->results['r']->status === 'hit'
     && $r->results['r']->value()[0]['path'] === '?address=123%20Main%20St');
 $m2 = new CacheManager((function () use ($geocode) { $g = new ProviderRegistry(); $g->register($geocode); return $g; })(),
-    new PolicyResolver(new UKModules\ADIF\Cache\AdifSettingsSource(new FakeModule(), [$geocode->id() => 1])),
+    new PolicyResolver(new UKModules\ADIF\Cache\AdifSettingsSource(
+        new FakeModule(['adif-cache-enabled' => true], ['cache-enabled' => [1 => true]]), [$geocode->id() => 1])),
     new InMemoryStorage(), new KeyBuilder(str_repeat('k', 32)));
 try { $m2->fetch($geocode->id(), ['r' => ['path' => '?address=1']], $c); check('identifying caching refused without cipher', false); }
 catch (PolicyViolation) { check('identifying caching refused without cipher', true); }
-$m = adif(['adif-cache-block-identifying' => true], [], [$places, $geocode, $static], $store); $sent = [];
-$r = $m->fetch($geocode->id(), ['r' => ['path' => '?address=1']], $c);
-check('admin block-identifying forces offline', count($sent) === 0 && $r->policy->mode === FetchMode::Offline);
-$r = $m->fetch($places->id(), $q, $c);
-check('...but public sources still run', count($sent) === 1);
+echo "ADIF: caching on/off\n";
+// Server off: nothing cached even where the project opted in, and the project is told why
+$m = adif(['adif-cache-enabled' => false], [], [$places, $geocode, $static], $store); $sent = [];
+$m->fetch($places->id(), $q, $c); $r = $m->fetch($places->id(), $q, $c);
+check('server caching off: every request goes to the API', count($sent) === 2 && $r->results['r']->status === 'fetched');
+check('server caching off: nothing stored', empty($store->dump()));
+check('server caching off overrides the project opt-in, with a notice', !$r->policy->cachingEnabled
+    && str_contains(implode(' ', $r->policy->notices), 'turned off on this server'));
+$m = new CacheManager((function () use ($places) { $g = new ProviderRegistry(); $g->register($places); return $g; })(),
+    new PolicyResolver(new UKModules\ADIF\Cache\AdifSettingsSource(new FakeModule([], ['cache-enabled' => [0 => true]]), [$places->id() => 0])),
+    $store = new InMemoryStorage(), new KeyBuilder(str_repeat('k', 32)));
+$sent = []; $m->fetch($places->id(), $q, $c); $m->fetch($places->id(), $q, $c);
+check('server caching is off until an admin enables it', count($sent) === 2 && empty($store->dump()));
 
-$m = adif([], ['cache-mode' => [0 => 'live']], [$places, $geocode, $static], $store); $sent = [];
+// Server on, source not ticked: not cached, and no notice, since that's the project's own choice
+$m = adif([], ['cache-enabled' => [0 => false, 1 => true, 2 => true]], [$places, $geocode, $static], $store); $sent = [];
+$m->fetch($places->id(), $q, $c); $r = $m->fetch($places->id(), $q, $c);
+check('unticked source: every request goes to the API', count($sent) === 2 && empty($store->dump()));
+check('unticked source: no notice', !$r->policy->cachingEnabled && !$r->policy->notices);
+$r = $m->fetch($geocode->id(), ['r' => ['path' => '?address=1']], $c);
+check('other ticked sources in the project still cache', !empty($store->dump()) && $r->policy->cachingEnabled);
+$m = adif([], ['cache-enabled' => []], [$places, $geocode, $static], $store); $sent = [];
 $m->fetch($places->id(), $q, $c); $m->fetch($places->id(), $q, $c);
-check('per-source "always fetch" setting', count($sent) === 2);
-$m = adif(['adif-cache-disallow-live' => true], ['cache-mode' => [0 => 'live']], [$places, $geocode, $static], $store);
+check('sources are not cached unless ticked', count($sent) === 2 && empty($store->dump()));
+
+// "Use stored data only" needs a cache to read from
+$m = adif(['adif-cache-enabled' => false], ['cache-mode' => [0 => 'offline']], [$places, $geocode, $static], $store); $sent = [];
 $r = $m->fetch($places->id(), $q, $c);
-check('admin can disallow "always fetch"; falls back with notice', $r->policy->mode === FetchMode::CacheFirst && $r->policy->notices);
+check('offline source without a cache is requested from the API, with a notice', count($sent) === 1
+    && $r->policy->mode === FetchMode::CacheFirst && count($r->policy->notices) === 2);
+$m = adif([], ['cache-mode' => [0 => 'offline']], [$places, $geocode, $static], $store); $sent = [];
+$r = $m->fetch($places->id(), $q, $c);
+check('offline cached source still uses stored data only', count($sent) === 0 && $r->policy->mode === FetchMode::Offline);
+
+// ADIF doesn't block outbound requests: identifying sources go out
+$m = adif([], [], [$places, $geocode, $static], $store); $sent = [];
+$r = $m->fetch($geocode->id(), ['r' => ['path' => '?address=1']], $c);
+check('identifying source is requested (no admin egress block)', count($sent) === 1 && $r->policy->mode === FetchMode::CacheFirst);
 
 $m = adif([], ['cache-mode' => [0 => 'refresh_if_stale'], 'cache-max-age-days' => [0 => '30']], [$places, $geocode, $static], $store); $sent = [];
 $m->fetch($places->id(), $q, new FetchContext(7, '101', now: 1_000_000));

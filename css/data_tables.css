@@ -143,3 +143,36 @@
 .adif-dt-delete {
     margin-top: 10px;
 }
+
+/* How much of the project's data table allowance is in use, under the upload form */
+.adif-dt-usage {
+    margin-top: 10px;
+    color: #556;
+    font-size: 0.85em;
+}
+
+.adif-dt-usage p {
+    margin: 4px 0 0;
+}
+
+.adif-dt-usage-bar {
+    height: 6px;
+    max-width: 360px;
+    border-radius: 3px;
+    background: #e4e7eb;
+    overflow: hidden;
+}
+
+.adif-dt-usage-bar span {
+    display: block;
+    height: 100%;
+    background: #3e72a8;
+}
+
+.adif-dt-usage.is-near-full {
+    color: #7a1f1a;
+}
+
+.adif-dt-usage.is-near-full .adif-dt-usage-bar span {
+    background: #b3261e;
+}

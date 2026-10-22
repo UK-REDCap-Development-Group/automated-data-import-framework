@@ -12,18 +12,8 @@
     ],
     "system-settings": [
         {
-            "key": "adif-cache-block-network",
-            "name": "<b>API caching:</b> block all outbound API calls. Every project runs offline, using only data already cached on this server.",
-            "type": "checkbox"
-        },
-        {
-            "key": "adif-cache-block-identifying",
-            "name": "Don't allow API sources to send identifying record values (such as addresses) to external services. Sources that pipe in record values run offline unless the project marks those values as public codes.",
-            "type": "checkbox"
-        },
-        {
-            "key": "adif-cache-disallow-live",
-            "name": "Don't allow projects to choose \"Always fetch the latest data\" (e.g. for rate-limited APIs).",
+            "key": "adif-cache-enabled",
+            "name": "<b>API caching:</b> enable caching of API responses. Projects then choose which of their API sources to cache. When unchecked, nothing is cached on this server: every request goes to the API, whatever projects have chosen.",
             "type": "checkbox"
         },
         {
@@ -44,6 +34,18 @@
                     "name": "Within a record only"
                 }
             ]
+        },
+        {
+            "key": "adif-table-max-file-mb",
+            "name": "<b>Data tables:</b> largest file a project can upload, in MB. Leave blank for the default of 8 MB. The server's PHP upload limits still apply when they're lower.",
+            "type": "text",
+            "validation": "number"
+        },
+        {
+            "key": "adif-table-max-project-mb",
+            "name": "Most storage one project's data tables can use in total, in MB. Leave blank for the default of 32 MB. Lowering it doesn't remove tables already uploaded; it blocks new uploads until the project is back under the limit.",
+            "type": "text",
+            "validation": "number"
         }
     ],
     "auth-ajax-actions": [
@@ -100,8 +102,13 @@
                     "type": "password"
                 },
                 {
+                    "key": "cache-enabled",
+                    "name": "<b>Caching:</b> cache this API's responses. Each response is stored as imports request it, and identical requests reuse it instead of calling the API again. Has no effect if API caching is turned off for this server. The settings below apply only to cached sources.",
+                    "type": "checkbox"
+                },
+                {
                     "key": "cache-mode",
-                    "name": "<b>Caching:</b> when should ADIF call this API?",
+                    "name": "When should ADIF call this API?",
                     "type": "dropdown",
                     "choices": [
                         {
@@ -111,10 +118,6 @@
                         {
                             "value": "refresh_if_stale",
                             "name": "When stored data is older than a set number of days"
-                        },
-                        {
-                            "value": "live",
-                            "name": "Always fetch the latest data"
                         },
                         {
                             "value": "offline",

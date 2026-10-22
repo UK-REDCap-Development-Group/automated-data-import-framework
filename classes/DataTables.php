@@ -28,7 +28,9 @@ trait DataTables
     private static $dataTableSourcePrefix = 'table:';
     private static $dataTableExtensions = ['csv', 'tsv', 'tab', 'txt'];
     private static $dataTableDelimiters = [',', "\t", ';', '|'];
-    private static $maxDataTableBytes = 104857600; // 100 MB
+    // Defaults for the system settings capping uploads, in MB (see config.json)
+    private static $defaultDataTableFileMb = 8;
+    private static $defaultDataTableProjectMb = 32;
     // A request without a $limit returns at most this many rows, as Socrata does
     private static $defaultDataTableLimit = 1000;
     // A long table's measure column with more distinct values than this isn't naming measures
@@ -85,9 +87,11 @@ trait DataTables
         return '?' . rawurlencode($table['key_column']) . '=[' . $table['placeholder'] . ']';
     }
 
+    // The largest file a project may upload: the module's per-file limit, or the server's own PHP
+    // upload limits when they're lower
     public function maxDataTableUploadBytes()
     {
-        $limits = [self::$maxDataTableBytes];
+        $limits = [$this->dataTableFileLimitBytes()];
         foreach (['upload_max_filesize', 'post_max_size'] as $setting) {
             $bytes = $this->iniBytes(ini_get($setting));
             if ($bytes > 0) {
@@ -95,6 +99,72 @@ trait DataTables
             }
         }
         return min($limits);
+    }
+
+    // The per-file limit set by an administrator ("adif-table-max-file-mb"), else 8 MB
+    public function dataTableFileLimitBytes()
+    {
+        return $this->dataTableLimitSetting('adif-table-max-file-mb', self::$defaultDataTableFileMb);
+    }
+
+    // The most one project may keep across all its tables ("adif-table-max-project-mb"), else 32 MB
+    public function dataTableProjectLimitBytes()
+    {
+        return $this->dataTableLimitSetting('adif-table-max-project-mb', self::$defaultDataTableProjectMb);
+    }
+
+    // A size setting in MB, as bytes. Blank, zero, negative or not a number means the default.
+    private function dataTableLimitSetting($key, $defaultMb)
+    {
+        $mb = trim((string) $this->getSystemSetting($key));
+        $mb = is_numeric($mb) && (float) $mb > 0 ? (float) $mb : $defaultMb;
+        return (int) round($mb * 1048576);
+    }
+
+    // Bytes stored across this project's tables, leaving out $exceptId (a table being replaced)
+    public function dataTableStoredBytes($exceptId = null)
+    {
+        $total = 0;
+        foreach ($this->getDataTables() as $id => $table) {
+            if ($exceptId === null || (string) $id !== (string) $exceptId) {
+                $total += (int) ($table['bytes'] ?? 0);
+            }
+        }
+        return $total;
+    }
+
+    // What's left of the project's allowance, never below zero. With $exceptId, what a new file
+    // for that table could use, since its current file stops counting once it's replaced.
+    public function dataTableSpaceLeftBytes($exceptId = null)
+    {
+        return max(0, $this->dataTableProjectLimitBytes() - $this->dataTableStoredBytes($exceptId));
+    }
+
+    // Stops a file that would take the project's tables past their total allowance. $replacing is
+    // the id of the table the file replaces.
+    private function checkDataTableProjectLimit($bytes, $replacing = null)
+    {
+        $limit = $this->dataTableProjectLimitBytes();
+        $used = $this->dataTableStoredBytes($replacing);
+        if ($used + $bytes <= $limit) {
+            return;
+        }
+
+        $size = fn($b) => $this->formatDataTableBytes($b);
+        $left = $size(max(0, $limit - $used));
+        $inUse = $replacing === null
+            ? "{$size($used)} is already in use, leaving $left"
+            : "the project's other tables use {$size($used)}, leaving $left for this one";
+        throw new \Exception("This file ({$size($bytes)}) would take this project's data tables past their "
+            . "{$size($limit)} limit: $inUse. Delete or replace a table that's no longer needed, or ask a "
+            . 'REDCap administrator to raise the limit.');
+    }
+
+    private function formatDataTableBytes($bytes)
+    {
+        return $bytes >= 1048576 || $bytes === 0
+            ? round($bytes / 1048576, 1) . ' MB'
+            : max(1, (int) round($bytes / 1024)) . ' KB';
     }
 
     private function iniBytes($value)
@@ -118,6 +188,7 @@ trait DataTables
     public function addDataTable($upload, $name)
     {
         $file = $this->acceptDataTableUpload($upload);
+        $this->checkDataTableProjectLimit($file['bytes']);
 
         $name = trim(preg_replace('/\s+/', ' ', (string) $name));
         if ($name === '') {
@@ -172,6 +243,7 @@ trait DataTables
     {
         $table = $this->getDataTable($id);
         $file = $this->acceptDataTableUpload($upload);
+        $this->checkDataTableProjectLimit($file['bytes'], $id);
         $notices = $file['inspection']['warnings'];
         $columns = $file['inspection']['columns'];
 
@@ -610,7 +682,8 @@ trait DataTables
                 . '). A spreadsheet can be saved as CSV from Excel with File > Save As.');
         }
         if ($upload['size'] > $this->maxDataTableUploadBytes()) {
-            throw new \Exception("The file is larger than this server accepts ($maxMb MB).");
+            throw new \Exception("Data table files can be up to $maxMb MB, and this one is "
+                . $this->formatDataTableBytes((int) $upload['size']) . '.');
         }
 
         $contents = file_get_contents($upload['tmp_name']);
