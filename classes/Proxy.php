@@ -7,6 +7,7 @@ use ExternalModules\ExternalModules;
 use REDCap;
 
 use GuzzleHttp\Client;
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Exception\RequestException;
 
 // Mixed into UKModules\ADIF\ADIF (an AbstractExternalModule), so $this has access to
@@ -196,6 +197,11 @@ trait Proxy
                 $result['bodyJson'] = (json_last_error() === JSON_ERROR_NONE) ? $decoded : null;
                 $result['byteSize'] = strlen($body);
             }
+        } catch (GuzzleException $e) {
+            // Timeouts and connection failures: in Guzzle 7 ConnectException isn't a RequestException,
+            // so without this they'd escape and skip the cache's "use the stored value" fallback.
+            $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
+            $result['error'] = $e->getMessage();
         }
 
         return $result;

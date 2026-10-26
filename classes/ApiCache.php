@@ -27,17 +27,41 @@ trait ApiCache
     /** @var array<int, ConfiguredApiProvider> sourceIndex => provider */
     private array $apiCacheProviders = [];
 
+    /** @var array[] metadata for every HTTP call made through the cache this request; see apiCallMetadata() */
+    private array $apiCallTrace = [];
+
     // Fetches the decoded JSON for one (source, already-piped path) request through the cache.
     // Returns ['json' => array|null, 'status' => FetchResult::*, 'message' => ?string,
-    //          'provenance' => ?array, 'notices' => string[]]
+    //          'provenance' => ?array, 'notices' => string[],
+    //          'calls' => apiCallMetadata()[] for the requests actually sent (none when answered from the cache),
+    //          'identifying' => whether the piped path carries identifying values, so must be kept out of logs]
+    // 'message' can contain the request URL; use the calls' 'error' for anything that's logged.
     public function fetchApiJson($projectId, $record, $sourceIndex, $apiPath, ?FetchMode $modeOverride = null)
     {
+        // Uploaded tables are local files: nothing to cache, and their "table:<id>" source isn't an index
+        if ($this->isDataTableSource($sourceIndex)) {
+            $response = $this->dispatchApiRequest($sourceIndex, $apiPath);
+            $call = self::apiCallMetadata($response);
+            return [
+                'json'        => $call['error'] === null ? $response['bodyJson'] : null,
+                'status'      => $call['error'] === null ? FetchResult::FETCHED : FetchResult::ERROR,
+                'message'     => $call['error'],
+                'provenance'  => null,
+                'notices'     => [],
+                'calls'       => [$call],
+                // Tables are always looked up by a piped record value and have no "public codes" setting,
+                // so that value is treated as identifying
+                'identifying' => true,
+            ];
+        }
+
         $this->apiCacheManager($projectId);
         $provider = $this->apiCacheProviders[(int) $sourceIndex] ?? null;
         if ($provider === null) {
             throw new \Exception("No API source is configured at index \"$sourceIndex\".");
         }
 
+        $traceStart = count($this->apiCallTrace);
         try {
             $report = $this->apiCacheManager->fetch(
                 $provider->id(),
@@ -46,13 +70,18 @@ trait ApiCache
             );
         } catch (PolicyViolation $e) {
             return ['json' => null, 'status' => FetchResult::ERROR, 'message' => $e->getMessage(),
-                    'provenance' => null, 'notices' => []];
+                    'provenance' => null, 'notices' => [], 'calls' => array_slice($this->apiCallTrace, $traceStart),
+                    'identifying' => $provider->isIdentifying()];
         }
+        $calls = array_slice($this->apiCallTrace, $traceStart);
 
         $result = $report->results['req'];
         $notices = $report->policy->notices;
         if ($result->status === FetchResult::STALE && $result->message) {
-            $notices[] = $result->message;
+            // The cache's own message includes the request URL, which can carry an address
+            $failed = end($calls) ?: [];
+            $notices[] = 'API unavailable (' . ($failed['error'] ?? 'request failed') . '); used the value stored on '
+                . date('Y-m-d', $result->entry->retrievedAt) . '.';
         }
 
         return [
@@ -65,6 +94,44 @@ trait ApiCache
                 'from_cache'   => $result->status !== FetchResult::FETCHED,
             ] : null,
             'notices'    => $notices,
+            'calls'      => $calls,
+            'identifying' => $provider->isIdentifying(),
+        ];
+    }
+
+    // What's safe to log about one sendApiRequest()/queryDataTable() result: no URL, headers or body,
+    // since the URL can carry a piped address or a key and headers carry the Authorization token.
+    // 'error' is a short description built from the status or the cURL error, never the raw exception
+    // message (Guzzle's includes the URL and an excerpt of the response).
+    private static function apiCallMetadata(array $response): array
+    {
+        $isJson = is_array($response['bodyJson'] ?? null);
+        $isTable = !preg_match('#^https?://#i', (string) ($response['requestUrl'] ?? ''));
+
+        $error = null;
+        if (empty($response['success'])) {
+            if ($isTable) {
+                // A table's errors name its columns, not the value looked up
+                $error = 'table query failed: ' . ($response['error'] ?: 'unknown error');
+            } elseif (!empty($response['statusCode'])) {
+                $error = trim("HTTP {$response['statusCode']} " . ($response['reasonPhrase'] ?? ''));
+            } elseif (preg_match('/cURL error \d+:[^(]*/', (string) $response['error'], $match)) {
+                $error = trim($match[0]);
+            } else {
+                $error = 'request failed';
+            }
+        } elseif (!$isJson) {
+            $error = 'response was not JSON';
+        }
+
+        return [
+            'method'      => $response['requestMethod'] ?? 'GET',
+            'status_code' => $response['statusCode'] ?? null,
+            'reason'      => $response['reasonPhrase'] ?? null,
+            'elapsed_ms'  => $response['elapsedMs'] ?? null,
+            'bytes'       => $response['byteSize'] ?? null,
+            'json'        => $isJson,
+            'error'       => $error,
         ];
     }
 
@@ -87,7 +154,12 @@ trait ApiCache
 
         $public   = $this->getProjectSetting('lookups-are-public', $projectId) ?: [];
         $versions = $this->getProjectSetting('data-version', $projectId) ?: [];
-        $send     = fn($url, $key, $path) => $this->sendApiRequest($url, $key, $path);
+        // Every request the cache actually sends goes through here, so it's where calls are traced
+        $send     = function ($url, $key, $path) {
+            $response = $this->sendApiRequest($url, $key, $path);
+            $this->apiCallTrace[] = self::apiCallMetadata($response);
+            return $response;
+        };
 
         $registry = new ProviderRegistry();
         $idToIndex = [];
