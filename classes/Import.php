@@ -14,10 +14,14 @@ trait Import
     // Pulls every mapped API value for $record and saves it. Mappings for instruments that aren't
     // designated in $eventId are skipped, as are repeating instruments other than $instrument, since
     // there's no way to know which of their instances the data belongs in.
-    // Returns a summary of what was saved and what was skipped, which is also written to the module log.
+    // Returns a summary of what was saved and what was skipped, which the caller logs (see ImportLog):
+    //   saved / skipped / errors / notices - lists of fields or messages
+    //   not_populated - [field => error] for mapped fields left empty because their request or the save failed
+    //   requests      - one entry per endpoint request: source, path, outcome, the HTTP calls' metadata
+    //                   and which fields it saved, skipped or couldn't populate (see importRequestLog())
     public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1)
     {
-        $summary = ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => []];
+        $summary = ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => [], 'not_populated' => [], 'requests' => []];
 
         $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
         if (empty($mappings)) {
@@ -83,20 +87,46 @@ trait Import
         // Rows keyed by repeat instrument + instance, since saveData takes one row per instance
         $rows = [];
         foreach ($requests as $request) {
+            $start = microtime(true);
+            $log = $this->importRequestLog($request);
+            // An error leaves every field this request would have filled empty
+            $fail = function ($error) use (&$summary, &$log, $request) {
+                $log['error'] = $error;
+                foreach ($request['fields'] as $target) {
+                    $log['fields_not_populated'][] = $target['field'];
+                    $summary['not_populated'][$target['field']] = $error;
+                }
+                $summary['errors'][] = "{$log['source']} {$log['path']}: $error";
+            };
+
             $apiPath = $request['path'];
+            $pipedValues = [];
             try {
-                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary);
+                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary, $pipedValues);
                 // Goes through the cache (see ApiCache): when the server and the project both cache this
                 // source it may be answered locally; otherwise it's sent to the API.
                 $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath);
             } catch (\Throwable $e) {
-                $summary['errors'][] = "$apiPath: " . $e->getMessage();
+                $fail($this->withoutLookupValues($e->getMessage(), $apiPath, $request['path'], $pipedValues));
+                $log['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
+                $summary['requests'][] = $log;
                 continue;
             }
 
+            // Identifying values (an address) stay out of the log: it keeps the [placeholder] path instead
+            if (empty($fetched['identifying'])) {
+                $log['path'] = $apiPath;
+            }
+            $log['outcome'] = $fetched['status'];
+            $log['calls'] = $fetched['calls'];
             array_push($summary['notices'], ...$fetched['notices']);
+
             if ($fetched['json'] === null) {
-                $summary['errors'][] = "$apiPath: " . ($fetched['message'] ?: 'no data');
+                $lastCall = end($fetched['calls']) ?: [];
+                $fail(($lastCall['error'] ?? null)
+                    ?: $this->withoutLookupValues($fetched['message'] ?: 'no data', $apiPath, $request['path'], $pipedValues));
+                $log['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
+                $summary['requests'][] = $log;
                 continue;
             }
 
@@ -105,12 +135,15 @@ trait Import
                 $value = $this->resolveApiPath($fetched['json'], $target['path']);
                 if ($value === null || $value === '') {
                     $summary['skipped'][] = "$field: no value at \"{$target['path']}\"";
+                    $log['fields_skipped'][] = "$field: no value at \"{$target['path']}\"";
                     continue;
                 }
 
                 $values = $this->toRedcapValues($dictionary[$field], $value);
                 if ($values === null) {
-                    $summary['skipped'][] = "$field: \"$value\" doesn't match any of the field's choices";
+                    // Logged without the value itself, since API responses can echo identifying input
+                    $summary['skipped'][] = "$field: the API's value doesn't match any of the field's choices";
+                    $log['fields_skipped'][] = "$field: the API's value doesn't match any of the field's choices";
                     continue;
                 }
 
@@ -127,18 +160,83 @@ trait Import
                 }
                 $rows[$rowKey] += $values;
                 $summary['saved'][] = $field;
+                $log['fields_saved'][] = $field;
             }
+
+            $log['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
+            $summary['requests'][] = $log;
         }
 
         if (!empty($rows)) {
             $saveResult = REDCap::saveData($projectId, 'json', json_encode(array_values($rows)), 'normal');
             if (!empty($saveResult['errors'])) {
-                $summary['errors'][] = 'saveData: ' . implode('; ', (array) $saveResult['errors']);
+                $error = 'saveData: ' . implode('; ', (array) $saveResult['errors']);
+                $summary['errors'][] = $error;
+                // saveData is all or nothing, so none of the fields fetched for it were populated
+                foreach ($summary['saved'] as $field) {
+                    $summary['not_populated'][$field] = $error;
+                }
+                foreach ($summary['requests'] as &$requestLog) {
+                    array_push($requestLog['fields_not_populated'], ...$requestLog['fields_saved']);
+                    $requestLog['fields_saved'] = [];
+                }
+                unset($requestLog);
                 $summary['saved'] = [];
             }
         }
 
         return $summary;
+    }
+
+    // The log entry for one endpoint request, filled in as the request is made. 'path' starts as the
+    // schema's path with its [placeholders], and is replaced with the piped path only for public sources.
+    private function importRequestLog($request)
+    {
+        return [
+            'source' => $this->importSourceLabel($request['source']),
+            'path' => $request['path'],
+            'outcome' => 'not_sent',   // or FetchResult::* (hit, fetched, stale, miss, error)
+            'calls' => [],
+            'error' => null,
+            'elapsed_ms' => null,
+            'fields_requested' => array_column($request['fields'], 'field'),
+            'fields_saved' => [],
+            'fields_skipped' => [],
+            'fields_not_populated' => [],
+        ];
+    }
+
+    // An API source's base URL (with any key in its query string masked), or a table's name
+    private function importSourceLabel($source)
+    {
+        try {
+            if ($this->isDataTableSource($source)) {
+                return $this->dataTableEndpoint($this->getDataTable($this->dataTableIdFromSource($source)));
+            }
+            return preg_replace('/([?&](?:api[_-]?key|apikey|key|token|access_token|\$\$app_token|app_token)=)[^&#]*/i',
+                '$1[redacted]', $this->getApiSource($source)['url']);
+        } catch (\Throwable $e) {
+            return "source $source";
+        }
+    }
+
+    // Takes the record's piped lookup values back out of a message before it's logged, in case it
+    // quotes the request URL: the piped path becomes its [placeholder] form, and stray values are masked.
+    private function withoutLookupValues($message, $pipedPath, $templatePath, $values)
+    {
+        $message = (string) $message;
+        if ($pipedPath !== $templatePath && $pipedPath !== '') {
+            $message = str_replace($pipedPath, $templatePath, $message);
+        }
+        // Longest first, so a value inside another isn't masked piecemeal; very short values
+        // (a state code) would mask unrelated text, and aren't identifying on their own.
+        usort($values, fn($a, $b) => strlen($b) <=> strlen($a));
+        foreach ($values as $value) {
+            if (strlen((string) $value) >= 4) {
+                $message = str_replace([rawurlencode($value), urlencode($value), $value], '[redacted]', $message);
+            }
+        }
+        return $message;
     }
 
     // Finds the schema entry a saved mapping points at. Mappings saved before endpoints were
@@ -171,7 +269,8 @@ trait Import
 
     // Replaces [placeholder]s in an endpoint path with this record's values, e.g. "/people/[email]"
     // becomes "/people/jane%40example.com". Each placeholder is read from its lookup field.
-    private function pipeRecordValues($projectId, $record, $eventId, $apiPath, $sourceIndex, $dictionary)
+    // $values receives [placeholder => value], so callers can keep the values out of what they log.
+    private function pipeRecordValues($projectId, $record, $eventId, $apiPath, $sourceIndex, $dictionary, &$values = [])
     {
         if (!preg_match_all('/\[([a-z][a-z0-9_]*)\]/', $apiPath, $matches)) {
             return $apiPath;

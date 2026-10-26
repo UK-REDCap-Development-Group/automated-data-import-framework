@@ -10,6 +10,8 @@ require_once __DIR__ . '/classes/Proxy.php';
 require_once __DIR__ . '/classes/Import.php';
 require_once __DIR__ . '/classes/SchemaDetection.php';
 require_once __DIR__ . '/classes/DataTables.php';
+require_once __DIR__ . '/classes/ApiCache.php';
+require_once __DIR__ . '/classes/ImportLog.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -17,6 +19,8 @@ class ADIF extends AbstractExternalModule
     use Import;
     use SchemaDetection;
     use DataTables;
+    use ApiCache;
+    use ImportLog;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -131,25 +135,18 @@ class ADIF extends AbstractExternalModule
 
     // Pulls from the configured APIs and saves the mapped values into the record once a survey is submitted.
     // Failures are logged rather than thrown so the respondent still reaches the completion page.
+    // Each endpoint hit and what it returned goes to the module log, and a summary to the project's
+    // Logging page (see ImportLog).
     function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
     {
+        $start = microtime(true);
         try {
             $summary = $this->importMappedData($project_id, $record, $event_id, $instrument, $repeat_instance);
         } catch (\Throwable $e) {
-            $summary = ['saved' => [], 'skipped' => [], 'errors' => [$e->getMessage()]];
+            $summary = ['saved' => [], 'skipped' => [], 'errors' => [$e->getMessage()], 'requests' => []];
         }
+        $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
 
-        if (empty($summary['saved']) && empty($summary['skipped']) && empty($summary['errors'])) {
-            return;
-        }
-
-        $this->log('API import after survey completion', [
-            'record' => $record,
-            'event_id' => $event_id,
-            'instrument' => $instrument,
-            'saved' => implode(', ', $summary['saved']),
-            'skipped' => implode("\n", $summary['skipped']),
-            'errors' => implode("\n", $summary['errors']),
-        ]);
+        $this->logImportRun('API import after survey completion', $project_id, $record, $event_id, $instrument, $summary);
     }
 }
