@@ -12,6 +12,7 @@ require_once __DIR__ . '/classes/SchemaDetection.php';
 require_once __DIR__ . '/classes/DataTables.php';
 require_once __DIR__ . '/classes/ApiCache.php';
 require_once __DIR__ . '/classes/ImportLog.php';
+require_once __DIR__ . '/classes/ImportStatus.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -21,6 +22,7 @@ class ADIF extends AbstractExternalModule
     use DataTables;
     use ApiCache;
     use ImportLog;
+    use ImportStatus;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -72,6 +74,14 @@ class ADIF extends AbstractExternalModule
         return (bool) preg_match("/(ExternalModules|external_modules)\/manager\/project\.php/", $page);
     }
 
+    // The module's own pages (pages/*.php), where the Imports page's retry buttons live
+    private static function isModulePage()
+    {
+        $page = isset($_SERVER['PHP_SELF']) ? $_SERVER['PHP_SELF'] : "";
+        return (bool) preg_match("/\/external_modules\/index\.php$/", $page)
+            || (bool) preg_match("/ExternalModules\/index\.php$/", $page);
+    }
+
     // Users who may change the module's configuration, and so the API sources it calls and the
     // tables uploaded on the Data Tables page
     public function canConfigureApiSources($project_id)
@@ -88,6 +98,14 @@ class ADIF extends AbstractExternalModule
             echo '<script>window.ADIFSchemaDetect = { prefix: ' . json_encode($this->getPrefix())
                 . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
             $this->includeJS('js/schema_detect.js');
+        }
+
+        // Gives the Imports page its retry buttons (see pages/Imports.php and js/imports.js)
+        if ($project_id && self::isModulePage() && $this->canConfigureApiSources($project_id)) {
+            $this->initializeJavascriptModuleObject();
+            echo '<script>window.ADIFImports = { prefix: ' . json_encode($this->getPrefix())
+                . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
+            $this->includeJS('js/imports.js');
         }
     }
 
@@ -108,6 +126,26 @@ class ADIF extends AbstractExternalModule
                 } catch (\Throwable $e) {
                     return ['status' => 'error', 'message' => $e->getMessage()];
                 }
+
+            case 'retry-import':
+                // Re-runs a logged import run that left mapped fields empty (see ImportStatus::retryImportRun).
+                // Writes record data, so it's limited to the same users who define what gets imported.
+                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
+                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can retry imports.'];
+                }
+                if (!isset($payload['run_id']) || !is_string($payload['run_id']) || !preg_match('/^[0-9a-f]{12}$/', $payload['run_id'])) {
+                    return ['status' => 'error', 'message' => 'The retry request is missing a valid run id.'];
+                }
+
+                $run = $this->importRunById($project_id, $payload['run_id']);
+                if ($run === null) {
+                    return ['status' => 'error', 'message' => 'That run couldn\'t be found in this project\'s log. Reload the page and try again.'];
+                }
+                if (trim((string) $run['record']) === '') {
+                    return ['status' => 'error', 'message' => 'That run has no record on it, so there is nothing to re-run it for.'];
+                }
+
+                return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
 
             default:
                 return ['status' => 'error', 'message' => "Unknown action: $action"];
@@ -136,7 +174,8 @@ class ADIF extends AbstractExternalModule
     // Pulls from the configured APIs and saves the mapped values into the record once a survey is submitted.
     // Failures are logged rather than thrown so the respondent still reaches the completion page.
     // Each endpoint hit and what it returned goes to the module log, and a summary to the project's
-    // Logging page (see ImportLog).
+    // Logging page (see ImportLog). Failed runs and the fields they left empty are then visible on the
+    // Imports page (see ImportStatus and pages/Imports.php), where they can also be re-run by hand.
     function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
     {
         $start = microtime(true);
@@ -146,6 +185,7 @@ class ADIF extends AbstractExternalModule
             $summary = ['saved' => [], 'skipped' => [], 'errors' => [$e->getMessage()], 'requests' => []];
         }
         $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
+        $summary['repeat_instance'] = $repeat_instance;
 
         $this->logImportRun('API import after survey completion', $project_id, $record, $event_id, $instrument, $summary);
     }

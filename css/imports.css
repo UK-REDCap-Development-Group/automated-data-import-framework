@@ -1,0 +1,212 @@
+/* The Imports page (pages/Imports.php). Builds on test_page.css for alerts, pills and form rows. */
+
+.adif-imp-page {
+    max-width: 1200px;
+}
+
+.adif-imp-filters {
+    align-items: flex-end;
+    margin-bottom: 4px;
+}
+
+/* The "From stored data" outcome: a warning rather than an error or an all-clear */
+.adif-status-stale {
+    background: #fff4d9;
+    color: #8a6100;
+}
+
+/* The retry toolbar: bypass-cache choice, bulk retry and its progress line */
+.adif-imp-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    margin: 10px 0 4px;
+    padding: 8px 12px;
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+    background: #f8fafb;
+}
+
+.adif-imp-bypass {
+    font-weight: normal;
+    font-size: 0.88em;
+    color: #445;
+    margin: 0;
+}
+
+.adif-imp-bypass input {
+    margin-right: 6px;
+}
+
+.adif-imp-progress {
+    font-size: 0.88em;
+    color: #556;
+}
+
+/* The per-record lookup card */
+.adif-imp-record-run {
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin: 8px 0;
+}
+
+.adif-imp-record-run.is-attention {
+    border-color: #f5c2c0;
+    background: #fdf6f5;
+}
+
+.adif-imp-record-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+}
+
+.adif-imp-record-head .adif-imp-when {
+    margin-left: auto;
+}
+
+.adif-imp-explain {
+    margin: 6px 0 0;
+    font-size: 0.88em;
+    color: #445;
+}
+
+.adif-imp-success {
+    background: #e3f7e8;
+    border: 1px solid #b9e4c4;
+    color: #1e5b2e;
+}
+
+/* One run in the list: an accordion whose summary line reads like a table row */
+.adif-imp-run {
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+    margin: 6px 0;
+    background: #fff;
+}
+
+.adif-imp-run.is-attention {
+    border-color: #f5c2c0;
+}
+
+.adif-imp-run.is-stale {
+    border-color: #ffe082;
+}
+
+.adif-imp-run summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    list-style: none;
+    font-size: 0.9em;
+}
+
+.adif-imp-run summary::-webkit-details-marker {
+    display: none;
+}
+
+.adif-imp-run summary::before {
+    content: '\25B8';
+    color: #889;
+    margin-right: 2px;
+}
+
+.adif-imp-run[open] summary::before {
+    content: '\25BE';
+}
+
+.adif-imp-run[open] summary {
+    border-bottom: 1px solid #eef0f2;
+}
+
+.adif-imp-run.is-attention summary {
+    background: #fdf6f5;
+}
+
+.adif-imp-run.is-stale summary {
+    background: #fffdf5;
+}
+
+.adif-imp-when {
+    color: #667;
+    font-variant-numeric: tabular-nums;
+}
+
+.adif-imp-user {
+    min-width: 90px;
+    color: #445;
+}
+
+.adif-imp-rec {
+    min-width: 60px;
+    font-weight: 600;
+}
+
+.adif-imp-event,
+.adif-imp-inst {
+    color: #445;
+}
+
+.adif-imp-reqs {
+    color: #667;
+}
+
+.adif-imp-run summary .adif-status-pill {
+    margin-left: auto;
+}
+
+.adif-imp-desc {
+    margin: 8px 12px 4px;
+    color: #667;
+    font-size: 0.85em;
+}
+
+/* The retry button under a run's explanation */
+.adif-imp-retry-row {
+    margin: 8px 12px;
+}
+
+/* Where a retry's outcome appears (present from page load, filled by js/imports.js) */
+.adif-imp-retry-result:empty {
+    display: none;
+}
+
+.adif-imp-retry-result {
+    margin: 8px 12px 12px;
+}
+
+/* The per-request detail table */
+.adif-imp-scroll {
+    overflow: auto;
+    margin: 8px 12px 12px;
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+}
+
+.adif-imp-requests {
+    margin-bottom: 0;
+    border: none;
+}
+
+.adif-imp-requests th,
+.adif-imp-requests td {
+    white-space: nowrap;
+}
+
+.adif-imp-requests .adif-imp-path {
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.adif-imp-note {
+    margin: 4px 12px 10px;
+    font-size: 0.85em;
+    color: #445;
+}

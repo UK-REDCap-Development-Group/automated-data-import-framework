@@ -49,7 +49,8 @@
         }
     ],
     "auth-ajax-actions": [
-        "detect-schema"
+        "detect-schema",
+        "retry-import"
     ],
     "links": {
         "project": [
@@ -70,6 +71,12 @@
                 "name": "ADIF Data Tables",
                 "icon": "fa-table",
                 "url": "pages/Data_Tables.php",
+                "show-header": true
+            },
+            {
+                "name": "ADIF Imports",
+                "icon": "fa-clipboard-list",
+                "url": "pages/Imports.php",
                 "show-header": true
             }
         ]
