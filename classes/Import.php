@@ -14,12 +14,14 @@ trait Import
     // Pulls every mapped API value for $record and saves it. Mappings for instruments that aren't
     // designated in $eventId are skipped, as are repeating instruments other than $instrument, since
     // there's no way to know which of their instances the data belongs in.
+    // $modeOverride (a Cache\FetchMode, or null) is passed to the cache for every request, so a
+    // manual retry can force fresh API calls instead of stored data (see ImportStatus::retryImportRun).
     // Returns a summary of what was saved and what was skipped, which the caller logs (see ImportLog):
     //   saved / skipped / errors / notices - lists of fields or messages
     //   not_populated - [field => error] for mapped fields left empty because their request or the save failed
     //   requests      - one entry per endpoint request: source, path, outcome, the HTTP calls' metadata
     //                   and which fields it saved, skipped or couldn't populate (see importRequestLog())
-    public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1)
+    public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1, $modeOverride = null)
     {
         $summary = ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => [], 'not_populated' => [], 'requests' => []];
 
@@ -105,7 +107,7 @@ trait Import
                 $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary, $pipedValues);
                 // Goes through the cache (see ApiCache): when the server and the project both cache this
                 // source it may be answered locally; otherwise it's sent to the API.
-                $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath);
+                $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath, $modeOverride);
             } catch (\Throwable $e) {
                 $fail($this->withoutLookupValues($e->getMessage(), $apiPath, $request['path'], $pipedValues));
                 $log['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
