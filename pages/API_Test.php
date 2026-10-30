@@ -91,9 +91,8 @@ function adif_flatten_headers($headers)
 
     <?php if (empty($sources) && empty($tables)): ?>
         <div class="adif-alert adif-alert-empty">
-            No API sources are configured for this project yet. Add one under the module's project configuration
-            ("Input the base URLs of any APIs which you would like to make available to your project"), or upload
-            a table on the <a href="<?= htmlspecialchars($module->getUrl('pages/Data_Tables.php')) ?>">Data Tables</a> page.
+            No API sources are configured for this project yet. Add an API or upload a table on the
+            <a href="<?= htmlspecialchars($module->getUrl('pages/Data_Sources.php')) ?>">Data Sources</a> page.
         </div>
     <?php else: ?>
 

@@ -5,7 +5,8 @@ namespace UKModules\ADIF;
 use REDCap;
 
 // Mixed into UKModules\ADIF\ADIF alongside Proxy. Lets a project upload a CSV (or another delimited
-// text file) and use it as a data source, managed on pages/Data_Tables.php.
+// text file) and use it as a data source, managed on the Data Sources page
+// (pages/data_sources/tables.php).
 //
 // A table answers requests the way a Socrata dataset does, so everything built for API sources works
 // on it unchanged: its source id ("table:<id>") goes wherever an API source's index does, its fields

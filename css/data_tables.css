@@ -1,4 +1,5 @@
-/* The Data Tables page (pages/Data_Tables.php). Builds on test_page.css for alerts and form rows. */
+/* The Data Sources page (pages/Data_Sources.php): shared card and form styles, and its Uploaded tables
+   tab (pages/data_sources/tables.php). Builds on test_page.css for alerts and form rows. */
 
 .adif-dt-page {
     max-width: 1040px;

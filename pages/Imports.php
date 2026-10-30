@@ -15,8 +15,11 @@ require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 $pid = $module->getProjectId();
 
 $recordFilter = trim((string) ($_GET['record'] ?? ''));
-$statusFilter = in_array((string) ($_GET['status'] ?? ''), ['attention', 'stale', 'ok'], true) ? (string) $_GET['status'] : '';
-$limit = in_array((int) ($_GET['limit'] ?? 50), [25, 50, 100, 200], true) ? (int) $_GET['limit'] : 50;
+$statusFilter = in_array((string) ($_GET['status'] ?? ''), ['attention', 'dismissed', 'stale', 'ok'], true) ? (string) $_GET['status'] : '';
+// Read once: re-reading $_GET['limit'] after the check would turn a missing parameter (the page as
+// opened from the menu) into 0, which importRuns() clamps to a single run
+$limitParam = (int) ($_GET['limit'] ?? 50);
+$limit = in_array($limitParam, [25, 50, 100, 200], true) ? $limitParam : 50;
 
 $allRuns = $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]);
 $attentionCount = count(array_filter($allRuns, fn($run) => $run['outcome'] === 'attention'));
@@ -54,6 +57,7 @@ function adif_imp_pill($outcome, $label)
 {
     $class = match ($outcome) {
         'attention' => 'adif-status-error',
+        'dismissed' => 'adif-status-none',
         'stale' => 'adif-status-stale',
         'ok' => 'adif-status-ok',
         default => 'adif-status-none',
@@ -68,6 +72,39 @@ function adif_imp_record_link($record, $pid)
     }
     return '<a href="' . adif_imp_h(APP_PATH_WEBROOT . "DataEntry/record_home.php?pid={$pid}&id=" . urlencode($record))
         . '" title="Open the record\'s home page">' . adif_imp_h($record) . '</a>';
+}
+
+// "Dismissed by jdoe on 2026-10-30 10:12 - reason" for a run whose Needs attention was dismissed
+function adif_imp_dismissed_note($run)
+{
+    $dismissed = $run['dismissed'] ?? null;
+    if (!$dismissed) {
+        return '';
+    }
+    return 'Dismissed by ' . adif_imp_h($dismissed['user'] !== '' ? $dismissed['user'] : '?')
+        . ' on ' . adif_imp_h(date('Y-m-d H:i', $dismissed['at']))
+        . ($dismissed['reason'] !== '' ? ' &mdash; ' . adif_imp_h($dismissed['reason']) : '') . '.';
+}
+
+// The retry and dismiss controls under a flagged run, or the undo button under a dismissed one.
+// js/imports.js builds the same markup when it switches a run between the two.
+function adif_imp_actions($run)
+{
+    $runId = adif_imp_h($run['run_id']);
+    if ($run['outcome'] === 'dismissed') {
+        return '<div class="adif-imp-retry-row"><button type="button" class="btn btn-defaultrc btn-sm adif-imp-undismiss"'
+            . ' data-run-id="' . $runId . '" title="Flags this run as needing attention again">Undo dismiss</button></div>';
+    }
+    return '<div class="adif-imp-retry-row">'
+        . '<button type="button" class="btn btn-primaryrc btn-sm adif-imp-retry" data-run-id="' . $runId . '"'
+        . ' title="Re-runs this import for record ' . adif_imp_h($run['record']) . ', same event, instrument and instance">'
+        . 'Retry this import</button>'
+        . '<span class="adif-imp-dismiss">'
+        . '<input type="text" class="form-control form-control-sm adif-imp-dismiss-reason" maxlength="500"'
+        . ' placeholder="Reason (optional)" aria-label="Reason for dismissing this run">'
+        . '<button type="button" class="btn btn-defaultrc btn-sm adif-imp-dismiss-btn" data-run-id="' . $runId . '"'
+        . ' title="Stops flagging this run as needing attention, without changing any data. Can be undone.">Dismiss</button>'
+        . '</span></div>';
 }
 
 function adif_imp_instrument($run)
@@ -114,6 +151,7 @@ function adif_imp_instrument($run)
             <select name="status" id="adif-imp-status">
                 <option value="">All runs</option>
                 <option value="attention" <?= $statusFilter === 'attention' ? 'selected' : '' ?>>Needs attention</option>
+                <option value="dismissed" <?= $statusFilter === 'dismissed' ? 'selected' : '' ?>>Dismissed</option>
                 <option value="stale" <?= $statusFilter === 'stale' ? 'selected' : '' ?>>From stored data</option>
                 <option value="ok" <?= $statusFilter === 'ok' ? 'selected' : '' ?>>OK</option>
             </select>
@@ -138,9 +176,11 @@ function adif_imp_instrument($run)
             <?php else: ?>
                 <?php $needsAttention = false; ?>
                 <?php $hasStale = false; ?>
+                <?php $hasDismissed = false; ?>
                 <?php foreach ($recordStatus as $run): ?>
                     <?php $needsAttention = $needsAttention || $run['outcome'] === 'attention'; ?>
                     <?php $hasStale = $hasStale || $run['outcome'] === 'stale'; ?>
+                    <?php $hasDismissed = $hasDismissed || $run['outcome'] === 'dismissed'; ?>
                     <div class="adif-imp-record-run<?= $run['outcome'] === 'attention' ? ' is-attention' : '' ?>">
                         <div class="adif-imp-record-head">
                             <?= adif_imp_pill($run['outcome'], $module->importOutcomeLabel($run['outcome'])) ?>
@@ -151,6 +191,9 @@ function adif_imp_instrument($run)
                         </div>
                         <?php if ($run['outcome'] === 'attention'): ?>
                             <p class="adif-imp-explain">Needs running again &mdash; <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></p>
+                        <?php elseif ($run['outcome'] === 'dismissed'): ?>
+                            <p class="adif-imp-explain"><?= adif_imp_dismissed_note($run) ?> Left empty:
+                                <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></p>
                         <?php elseif ($run['outcome'] === 'stale'): ?>
                             <p class="adif-imp-explain">Fields were filled from data stored on the server because the API was
                                 unavailable (intended behaviour). <?= nl2br(adif_imp_h($run['notices'])) ?></p>
@@ -162,6 +205,9 @@ function adif_imp_instrument($run)
                 <?php if ($needsAttention): ?>
                     <div class="adif-alert adif-alert-error" role="alert">This record has imports that need to be run
                         again &mdash; find them in the run list below and use its retry buttons.</div>
+                <?php elseif ($hasDismissed): ?>
+                    <div class="adif-alert adif-alert-empty">This record's remaining failed imports were dismissed, so
+                        nothing is flagged. Their fields are still empty; undo a dismissal in the run list to retry it.</div>
                 <?php elseif ($hasStale): ?>
                     <div class="adif-alert adif-alert-empty">The latest imports for this record used stored data. Nothing
                         is waiting, but re-running them once the APIs are back would refresh the values.</div>
@@ -204,7 +250,7 @@ function adif_imp_instrument($run)
                 &mdash; if its run_id is empty, it was logged before runs had ids; send this JSON along with a bug report.
             </div>
         <?php endif; ?>
-        <?php if ($diagnostics !== null && $diagnostics['without_project'] > 0): ?>
+        <?php if ($diagnostics !== null && ($diagnostics['without_project'] ?? 0) > 0): ?>
             <div class="adif-alert adif-alert-error">
                 <strong>Debug:</strong> <?= (int) $diagnostics['without_project'] ?> import
                 entr<?= $diagnostics['without_project'] === 1 ? 'y was' : 'ies were' ?> logged without a project, so
@@ -214,7 +260,8 @@ function adif_imp_instrument($run)
         <?php endif; ?>
     <?php else: ?>
         <?php foreach ($runs as $run): ?>
-            <details class="adif-imp-run<?= $run['outcome'] === 'attention' ? ' is-attention' : ($run['outcome'] === 'stale' ? ' is-stale' : '') ?>">
+            <details class="adif-imp-run<?= match ($run['outcome']) { 'attention' => ' is-attention', 'dismissed' => ' is-dismissed', 'stale' => ' is-stale', default => '' } ?>"
+                     data-run-id="<?= adif_imp_h($run['run_id']) ?>">
                 <summary>
                     <span class="adif-imp-when" title="<?= adif_imp_h(date('Y-m-d H:i:s', $run['logged'])) ?>"><?= adif_imp_h(date('Y-m-d H:i', $run['logged'])) ?></span>
                     <span class="adif-imp-user" title="Requested by"><?= adif_imp_h($run['user'] !== '' ? $run['user'] : '?') ?></span>
@@ -230,20 +277,17 @@ function adif_imp_instrument($run)
                     &middot; <?= adif_imp_h($run['elapsed_ms'] !== null ? $run['elapsed_ms'] . ' ms' : '?') ?></p>
 
                 <?php if ($run['outcome'] === 'attention'): ?>
-                    <div class="adif-alert adif-alert-error">Needs running again &mdash; <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                    <div class="adif-alert adif-alert-error adif-imp-status-note">Needs running again &mdash; <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                <?php elseif ($run['outcome'] === 'dismissed'): ?>
+                    <div class="adif-alert adif-alert-empty adif-imp-status-note"><?= adif_imp_dismissed_note($run) ?>
+                        It no longer counts as needing attention; left empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
                 <?php elseif ($run['outcome'] === 'stale'): ?>
                     <div class="adif-alert adif-alert-empty">Answered from stored data during an API outage; its fields
                         were filled. <?= nl2br(adif_imp_h($run['notices'])) ?></div>
                 <?php endif; ?>
 
-                <?php if ($canRetry && $run['outcome'] === 'attention'): ?>
-                    <div class="adif-imp-retry-row">
-                        <button type="button" class="btn btn-primaryrc btn-sm adif-imp-retry"
-                                data-run-id="<?= adif_imp_h($run['run_id']) ?>"
-                                title="Re-runs this import for record <?= adif_imp_h($run['record']) ?>, same event, instrument and instance">
-                            Retry this import
-                        </button>
-                    </div>
+                <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
+                    <?= adif_imp_actions($run) ?>
                 <?php endif; ?>
 
                 <?php if (!empty($run['request_logs'])): ?>

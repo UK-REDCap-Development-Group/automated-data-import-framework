@@ -13,76 +13,28 @@ trait Import
 
     // Pulls every mapped API value for $record and saves it. Mappings for instruments that aren't
     // designated in $eventId are skipped, as are repeating instruments other than $instrument, since
-    // there's no way to know which of their instances the data belongs in.
+    // there's no way to know which of their instances the data belongs in (see importPlan()).
     // $modeOverride (a Cache\FetchMode, or null) is passed to the cache for every request, so a
     // manual retry can force fresh API calls instead of stored data (see ImportStatus::retryImportRun).
+    // $plan is importPlan()'s result when the caller has already worked it out (the retry checks it
+    // against the run it's retrying first); null works it out here from the current mappings.
     // Returns a summary of what was saved and what was skipped, which the caller logs (see ImportLog):
     //   saved / skipped / errors / notices - lists of fields or messages
     //   not_populated - [field => error] for mapped fields left empty because their request or the save failed
     //   requests      - one entry per endpoint request: source, path, outcome, the HTTP calls' metadata
     //                   and which fields it saved, skipped or couldn't populate (see importRequestLog())
-    public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1, $modeOverride = null)
+    public function importMappedData($projectId, $record, $eventId, $instrument = null, $repeatInstance = 1, $modeOverride = null, $plan = null)
     {
         $summary = ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => [], 'not_populated' => [], 'requests' => []];
 
-        $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
-        if (empty($mappings)) {
-            return $summary;
-        }
-
-        $project = new \Project($projectId);
-        $dictionary = REDCap::getDataDictionary($projectId, 'array');
-        $apiFields = $this->getApiFields();
-
-        // One request per distinct (source, path) pair, no matter how many fields read from it
-        $requests = [];
-        foreach ($mappings as $form => $fields) {
-            if (!isset($project->eventsForms[$eventId]) || !in_array($form, $project->eventsForms[$eventId])) {
-                continue;
-            }
-
-            $repeatInstrument = '';
-            if ($project->isRepeatingForm($eventId, $form)) {
-                if ($form !== $instrument) {
-                    $summary['skipped'][] = "$form: repeating instrument other than the submitted one";
-                    continue;
-                }
-                $repeatInstrument = $form;
-            }
-            $isRepeating = $repeatInstrument !== '' || $project->isRepeatingEvent($eventId);
-
-            foreach ((array) $fields as $field => $config) {
-                $path = $config['mapping'] ?? '';
-                if ($path === '' || !isset($dictionary[$field])) {
-                    continue;
-                }
-                if (in_array($dictionary[$field]['field_type'], self::$unwritableFieldTypes)) {
-                    $summary['skipped'][] = "$field: {$dictionary[$field]['field_type']} fields can't be imported into";
-                    continue;
-                }
-
-                $apiField = $this->findApiField($apiFields, $path, $config['endpoint'] ?? null);
-                if ($apiField === null) {
-                    $summary['skipped'][] = "$field: \"$path\" is no longer offered by any configured API source";
-                    continue;
-                }
-
-                $key = $apiField['source'] . '|' . $apiField['path'];
-                $requests[$key]['source'] = $apiField['source'];
-                $requests[$key]['path'] = $apiField['path'];
-                $requests[$key]['fields'][] = [
-                    'field' => $field,
-                    'path' => $path,
-                    'repeatInstrument' => $repeatInstrument,
-                    'repeatInstance' => $isRepeating ? (int) $repeatInstance : null,
-                ];
-            }
-        }
-
+        $plan = $plan ?? $this->importPlan($projectId, $eventId, $instrument, $repeatInstance);
+        $summary['skipped'] = $plan['skipped'];
+        $requests = $plan['requests'];
         if (empty($requests)) {
             return $summary;
         }
 
+        $dictionary = REDCap::getDataDictionary($projectId, 'array');
         $recordIdField = REDCap::getRecordIdField();
         $eventName = REDCap::isLongitudinal() ? REDCap::getEventNames(true, false, $eventId) : null;
 
@@ -188,6 +140,80 @@ trait Import
         }
 
         return $summary;
+    }
+
+    // What an import into $eventId (from $instrument, instance $repeatInstance) would request under
+    // the project's current mappings, by the rules importMappedData() applies:
+    //   requests  - one per distinct (source, path) pair, no matter how many fields read from it:
+    //               [source, path, fields => [[field, path, repeatInstrument, repeatInstance], ...]]
+    //   skipped   - "name: reason" lines for mappings that can't be imported, as the summary reports them
+    //   unusable  - [field => reason] for mapped fields that can't be imported, by field
+    // Only reads settings and metadata - nothing is fetched or saved - so the retry can check a run
+    // against it before re-running anything (see ImportStatus::importRetryMappingCheck).
+    public function importPlan($projectId, $eventId, $instrument = null, $repeatInstance = 1)
+    {
+        $plan = ['requests' => [], 'skipped' => [], 'unusable' => []];
+
+        $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
+        if (empty($mappings)) {
+            return $plan;
+        }
+
+        $project = new \Project($projectId);
+        $dictionary = REDCap::getDataDictionary($projectId, 'array');
+        $apiFields = $this->getApiFields();
+
+        foreach ($mappings as $form => $fields) {
+            if (!isset($project->eventsForms[$eventId]) || !in_array($form, $project->eventsForms[$eventId])) {
+                continue;
+            }
+
+            $repeatInstrument = '';
+            if ($project->isRepeatingForm($eventId, $form)) {
+                if ($form !== $instrument) {
+                    $plan['skipped'][] = "$form: repeating instrument other than the submitted one";
+                    foreach (array_keys((array) $fields) as $field) {
+                        $plan['unusable'][$field] = "its instrument ($form) repeats, and isn't the one this import is for";
+                    }
+                    continue;
+                }
+                $repeatInstrument = $form;
+            }
+            $isRepeating = $repeatInstrument !== '' || $project->isRepeatingEvent($eventId);
+
+            foreach ((array) $fields as $field => $config) {
+                $path = $config['mapping'] ?? '';
+                if ($path === '' || !isset($dictionary[$field])) {
+                    continue;
+                }
+                if (in_array($dictionary[$field]['field_type'], self::$unwritableFieldTypes)) {
+                    $reason = "{$dictionary[$field]['field_type']} fields can't be imported into";
+                    $plan['skipped'][] = "$field: $reason";
+                    $plan['unusable'][$field] = $reason;
+                    continue;
+                }
+
+                $apiField = $this->findApiField($apiFields, $path, $config['endpoint'] ?? null);
+                if ($apiField === null) {
+                    $reason = "\"$path\" is no longer offered by any configured API source";
+                    $plan['skipped'][] = "$field: $reason";
+                    $plan['unusable'][$field] = $reason;
+                    continue;
+                }
+
+                $key = $apiField['source'] . '|' . $apiField['path'];
+                $plan['requests'][$key]['source'] = $apiField['source'];
+                $plan['requests'][$key]['path'] = $apiField['path'];
+                $plan['requests'][$key]['fields'][] = [
+                    'field' => $field,
+                    'path' => $path,
+                    'repeatInstrument' => $repeatInstrument,
+                    'repeatInstance' => $isRepeating ? (int) $repeatInstance : null,
+                ];
+            }
+        }
+
+        return $plan;
     }
 
     // The log entry for one endpoint request, filled in as the request is made. 'path' starts as the
