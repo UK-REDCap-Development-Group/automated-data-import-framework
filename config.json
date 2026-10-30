@@ -50,7 +50,8 @@
     ],
     "auth-ajax-actions": [
         "detect-schema",
-        "retry-import"
+        "retry-import",
+        "dismiss-import"
     ],
     "links": {
         "project": [
@@ -68,9 +69,9 @@
                 "show-header": true
             },
             {
-                "name": "ADIF Data Tables",
-                "icon": "fa-table",
-                "url": "pages/Data_Tables.php",
+                "name": "ADIF Data Sources",
+                "icon": "fa-plug",
+                "url": "pages/Data_Sources.php",
                 "show-header": true
             },
             {

@@ -18,6 +18,14 @@ trait ImportStatus
     private static $importLogPrefix = 'API import';
     private static $importRequestLogMessage = 'API import: endpoint request';
 
+    // A run flagged "Needs attention" can be dismissed by hand (see dismissImportRun), so a failure
+    // nobody intends to fix stops being flagged. Each dismissal, and each undo, is its own module log
+    // entry carrying the run's run_id, with who did it and when; the latest one for a run wins. The
+    // messages deliberately don't start with $importLogPrefix, so they're never read as part of a run.
+    private static $importDismissMessage = 'ADIF import run dismissed';
+    private static $importUndismissMessage = 'ADIF import run dismissal undone';
+    private static $importDismissReasonLength = 500;
+
     // How long a retry's lock is held (seconds). A second retry of the same run while the first is
     // still going is rejected, so two clicks can't interleave two imports of the same data.
     private static $importRetryLockSeconds = 60;
@@ -26,7 +34,9 @@ trait ImportStatus
     // share a run_id (one per endpoint request, then a summary - see ImportLog::logImportRun):
     //   run_id, logged (unix time), user, record, event_id, event_name, instrument, repeat_instance,
     //   description, requests (count), api_calls, elapsed_ms, saved, skipped, errors, notices,
-    //   not_populated, request_logs (the per-endpoint entries), outcome and explanation (see below)
+    //   not_populated, request_logs (the per-endpoint entries), outcome and explanation (see below),
+    //   dismissed (null, or [user, at, reason] when the run's "Needs attention" was dismissed, in
+    //   which case outcome is 'dismissed' - see importApplyDismissals)
     // $filters accepts 'record' (one record's runs only) and 'limit' (how many runs, default 50).
     public function importRuns($projectId, $filters = [])
     {
@@ -97,7 +107,7 @@ trait ImportStatus
         }
         unset($run);
 
-        return $runs;
+        return $this->importApplyDismissals($projectId, $runs);
     }
 
     // Reads the module log's import entries as [message, timestamp, username, record, <parameter>...]
@@ -265,19 +275,159 @@ trait ImportStatus
         return array_values($latest);
     }
 
+    // One logged run by its run_id, looked for among the project's most recent 500 runs, or null
+    public function importRunFromLog($projectId, $runId)
+    {
+        foreach ($this->importRuns($projectId, ['limit' => 500]) as $run) {
+            if ($run['run_id'] === $runId) {
+                return $run;
+            }
+        }
+        return null;
+    }
+
+    // Marks the runs whose "Needs attention" was dismissed (and not since undone): outcome becomes
+    // 'dismissed' and 'dismissed' holds who did it, when and why. Only flagged runs can be dismissed,
+    // and a run's own entries never change, so a dismissed run would otherwise read 'attention'.
+    private function importApplyDismissals($projectId, array $runs)
+    {
+        $dismissals = $this->importDismissals($projectId, array_column($runs, 'run_id'));
+        foreach ($runs as &$run) {
+            $run['dismissed'] = null;
+            if ($run['outcome'] === 'attention' && isset($dismissals[$run['run_id']])) {
+                $run['dismissed'] = $dismissals[$run['run_id']];
+                $run['outcome'] = 'dismissed';
+            }
+        }
+        unset($run);
+
+        return $runs;
+    }
+
+    // [run_id => [user, at (unix time), reason]] for the given runs' current dismissals: their
+    // dismiss and undo entries are read oldest first, so the latest one for each run decides.
+    private function importDismissals($projectId, array $runIds)
+    {
+        $runIds = array_values(array_unique(array_filter(array_map('strval', $runIds), 'strlen')));
+        if (empty($runIds)) {
+            return [];
+        }
+
+        $rows = $this->importQueryRows(
+            'select l.log_id, l.timestamp, l.message, u.username, p.value as run_id, r.value as reason'
+            . ' from redcap_external_modules_log l'
+            . ' join redcap_external_modules m on m.external_module_id = l.external_module_id'
+            . ' and m.directory_prefix = ?'
+            . ' join redcap_external_modules_log_parameters p on p.log_id = l.log_id and p.name = \'run_id\''
+            . ' left join redcap_external_modules_log_parameters r on r.log_id = l.log_id and r.name = \'reason\''
+            . ' left join redcap_user_information u on u.ui_id = l.ui_id'
+            . ' where l.project_id = ? and l.message in (?, ?)'
+            . ' and p.value in (' . implode(',', array_fill(0, count($runIds), '?')) . ')'
+            . ' order by l.log_id asc',
+            array_merge([$this->getPrefix(), (int) $projectId, self::$importDismissMessage, self::$importUndismissMessage], $runIds)
+        );
+
+        $dismissals = [];
+        foreach ($rows as $row) {
+            $runId = (string) ($row['run_id'] ?? '');
+            if (($row['message'] ?? '') === self::$importDismissMessage) {
+                $dismissals[$runId] = [
+                    'user' => (string) ($row['username'] ?? ''),
+                    'at' => self::importLogTime($row['timestamp'] ?? 0),
+                    'reason' => (string) ($row['reason'] ?? ''),
+                ];
+            } else {
+                unset($dismissals[$runId]);
+            }
+        }
+
+        return $dismissals;
+    }
+
+    // Dismisses a run's "Needs attention" ($undo false), or undoes that ($undo true), as the
+    // logged-in user. Dismissing is for failures nobody intends to fix: the run stops counting as
+    // needing attention - on the run list, in the alert, in the record lookup's verdict and for
+    // Retry all failed - but nothing about the run or the record's data changes, and it can be
+    // undone. Written to the module log (with the reason) and to the project's Logging page.
+    // Returns ['status' => 'success', 'run' => <the run as importRuns() now builds it>] or
+    // ['status' => 'error', 'message' => ...].
+    public function dismissImportRun($projectId, array $run, $undo = false, $reason = '')
+    {
+        if (!$undo && $run['outcome'] !== 'attention') {
+            return ['status' => 'error', 'message' => $run['outcome'] === 'dismissed'
+                ? 'This run has already been dismissed.'
+                : 'Only runs that need attention can be dismissed.'];
+        }
+        if ($undo && $run['outcome'] !== 'dismissed') {
+            return ['status' => 'error', 'message' => 'This run isn\'t dismissed, so there is nothing to undo.'];
+        }
+
+        $reason = trim(preg_replace('/\s+/', ' ', (string) $reason));
+        if (mb_strlen($reason) > self::$importDismissReasonLength) {
+            $reason = mb_substr($reason, 0, self::$importDismissReasonLength);
+        }
+
+        $user = $this->getUser();
+        $username = $user ? $user->getUsername() : '';
+
+        $parameters = ['project_id' => $projectId, 'record' => $run['record'], 'run_id' => $run['run_id'],
+            'event_id' => $run['event_id'], 'instrument' => $run['instrument'], 'repeat_instance' => $run['repeat_instance']];
+        if (!$undo && $reason !== '') {
+            $parameters['reason'] = $reason;
+        }
+        try {
+            // Not writeModuleLog(): that swallows failures, and here the user must hear about one
+            $this->log($undo ? self::$importUndismissMessage : self::$importDismissMessage,
+                array_filter($parameters, fn($value) => $value !== null && $value !== ''));
+        } catch (\Throwable $e) {
+            return ['status' => 'error', 'message' => 'The dismissal couldn\'t be saved: ' . $e->getMessage()];
+        }
+
+        try {
+            REDCap::logEvent($undo ? 'ADIF: import error dismissal undone' : 'ADIF: import error dismissed',
+                trim(($run['instrument'] ? "Instrument: {$run['instrument']}\n" : '')
+                    . ($reason !== '' && !$undo ? "Reason: $reason\n" : '')
+                    . "Details: ADIF module log, run_id {$run['run_id']}"),
+                null, $run['record'], $run['event_id'], $projectId);
+        } catch (\Throwable $e) {
+            error_log("ADIF: couldn't write the dismissal to the project log: " . $e->getMessage());
+        }
+
+        if ($undo) {
+            $run['outcome'] = 'attention';
+            $run['dismissed'] = null;
+        } else {
+            $run['outcome'] = 'dismissed';
+            $run['dismissed'] = ['user' => $username, 'at' => time(), 'reason' => $reason];
+        }
+
+        return ['status' => 'success', 'run' => $run];
+    }
+
     // Re-runs an import run that needs attention (see importRunNeedsAttention), as the logged-in
     // user: same record, event, instrument and repeat instance, through importMappedData().
     // $bypassCache passes FetchMode::Live to every request, so a retry after an outage calls the
     // APIs instead of re-reading what the cache stored during it. Returns:
     //   ['status' => 'success', 'run' => <the new run as importRuns() builds it>]
     //   ['status' => 'locked',  'message' => ...] when a retry of this run is already in progress
-    //   ['status' => 'error',   'message' => ...] when the import threw
+    //   ['status' => 'not_mapped', 'message' => ..., 'not_mapped' => [field => why]] when the
+    //       current mappings wouldn't import any of the fields the run left empty (see
+    //       importRetryMappingCheck), so there's nothing a retry could fix - nothing is run or logged
+    // Before anything runs, the run is checked against the project's current mappings, and the
+    // import then uses exactly the plan that was checked. Fields the run left empty that are no
+    // longer mapped are named in the new run's notices.
+    // An import that throws is reported inside the run (its errors), as it is for the survey hook.
     // Unlike the survey hook, errors are returned rather than only logged: a user waiting on the
     // button needs to see them.
     public function retryImportRun($projectId, array $run, $bypassCache = true)
     {
         $user = $this->getUser();
         $username = $user ? $user->getUsername() : '?';
+
+        $check = $this->importRetryMappingCheck($projectId, $run);
+        if ($check['problem'] !== null) {
+            return ['status' => 'not_mapped', 'message' => $check['problem'], 'not_mapped' => $check['not_mapped']];
+        }
 
         $lock = 'import-retry-' . $projectId . '-' . $run['run_id'];
         if (!$this->importRetryAcquireLock($lock)) {
@@ -291,9 +441,14 @@ trait ImportStatus
             try {
                 $summary = $this->importMappedData($projectId, $run['record'], $run['event_id'],
                     $run['instrument'], $run['repeat_instance'] ?? 1,
-                    $bypassCache ? \UKModules\ADIF\Cache\FetchMode::Live : null);
+                    $bypassCache ? \UKModules\ADIF\Cache\FetchMode::Live : null, $check['plan']);
             } catch (\Throwable $e) {
-                $summary = ['saved' => [], 'skipped' => [], 'errors' => [$e->getMessage()], 'requests' => []];
+                $summary = ['errors' => [$e->getMessage()]];
+            }
+            $summary += ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => [], 'not_populated' => [], 'requests' => []];
+            if (!empty($check['not_mapped'])) {
+                $summary['notices'][] = 'Left empty by the run being retried, but no longer mapped, so not retried: '
+                    . self::importFieldReasons($check['not_mapped']) . '.';
             }
             $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
             $summary['repeat_instance'] = $run['repeat_instance'] ?? 1;
@@ -321,8 +476,6 @@ trait ImportStatus
             'summary' => null,
             'request_logs' => $requestLogs,
         ];
-        $newRun['outcome'] = $this->importRunNeedsAttention($summary, $requestLogs);
-        $newRun['explanation'] = $this->importRunExplanation($newRun);
         $newRun += [
             'requests' => count($summary['requests']),
             'api_calls' => array_sum(array_map(fn($r) => count($r['calls'] ?? []), $summary['requests'])),
@@ -334,15 +487,98 @@ trait ImportStatus
             'not_populated' => implode("\n", array_map(fn($f, $e) => "$f: $e", array_keys($summary['not_populated']), $summary['not_populated'])),
             'event_name' => $this->importEventName($projectId, $run['event_id']),
         ];
+        // The outcome rules read the logged (string) form of the summary, as the run list does - an
+        // empty errors array would otherwise read as "has errors" and flag every retry
+        $newRun['outcome'] = $this->importRunNeedsAttention(['errors' => $newRun['errors']], $requestLogs);
+        $newRun['explanation'] = $this->importRunExplanation($newRun);
 
         return ['status' => 'success', 'run' => $newRun];
+    }
+
+    // Checks a logged run against the project's current mappings before it's retried, using the
+    // same rules as the import itself (Import::importPlan), so a retry never re-runs an import whose
+    // fields have since been unmapped. Returns:
+    //   plan        - the plan the retry should run, so it imports exactly what was checked
+    //   fields      - the fields the run left empty ([] when the run doesn't say which, e.g. it threw)
+    //   still_mapped - those the current mappings would import again
+    //   not_mapped  - [field => why] for those they wouldn't
+    //   problem     - null when the retry can go ahead, else why it shouldn't: no mappings apply to the
+    //                 run's event and instrument any more, or none of its empty fields are still mapped
+    public function importRetryMappingCheck($projectId, array $run)
+    {
+        $plan = $this->importPlan($projectId, $run['event_id'], $run['instrument'], $run['repeat_instance'] ?? 1);
+
+        $mapped = [];
+        foreach ($plan['requests'] as $request) {
+            foreach ($request['fields'] as $target) {
+                $mapped[$target['field']] = true;
+            }
+        }
+
+        $fields = $this->importRunEmptyFields($run);
+        $stillMapped = array_values(array_filter($fields, fn($field) => isset($mapped[$field])));
+        $notMapped = [];
+        foreach ($fields as $field) {
+            if (!isset($mapped[$field])) {
+                $notMapped[$field] = $plan['unusable'][$field] ?? 'its mapping was removed, or it is no longer on this event';
+            }
+        }
+
+        $where = 'record ' . $run['record'] . "'s " . ($run['instrument'] ? "{$run['instrument']} instrument" : 'event');
+        // The specific reason first: which of the run's fields are unmapped, and why
+        $problem = null;
+        if (!empty($fields) && empty($stillMapped)) {
+            $problem = 'Not retried: none of the fields this run left empty are mapped any more - '
+                . self::importFieldReasons($notMapped) . '. Check the Mapping page.';
+        } elseif (empty($mapped)) {
+            $problem = "Not retried: no API mappings apply to $where any more, so there is nothing to import."
+                . ' Check the Mapping page.';
+        }
+
+        return ['plan' => $plan, 'fields' => $fields, 'still_mapped' => $stillMapped,
+            'not_mapped' => $notMapped, 'problem' => $problem];
+    }
+
+    // The fields a logged run left empty: each failed request's not-populated fields (or, for a
+    // request that errored without saying which, every field it requested), plus the summary's
+    // not_populated lines ("field: error"), which also cover a failed saveData
+    private function importRunEmptyFields(array $run)
+    {
+        $split = fn($list) => array_filter(array_map('trim', preg_split('/[,\n]/', (string) $list)), 'strlen');
+
+        $fields = [];
+        foreach ($run['request_logs'] ?? [] as $request) {
+            if (trim((string) ($request['fields_saved'] ?? '')) !== '') {
+                continue;
+            }
+            $notPopulated = $split($request['fields_not_populated'] ?? '');
+            if (empty($notPopulated) && ($request['outcome'] ?? '') === 'error') {
+                $notPopulated = $split($request['fields_requested'] ?? '');
+            }
+            array_push($fields, ...$notPopulated);
+        }
+        foreach (preg_split('/\n/', (string) ($run['not_populated'] ?? '')) as $line) {
+            $field = trim(explode(':', $line, 2)[0]);
+            if ($field !== '') {
+                $fields[] = $field;
+            }
+        }
+
+        return array_values(array_unique($fields));
+    }
+
+    // "field_a (why), field_b (why)"
+    private static function importFieldReasons(array $reasons)
+    {
+        return implode(', ', array_map(fn($field, $why) => "$field ($why)", array_keys($reasons), $reasons));
     }
 
     // A retry's per-request summary in the shape the run list's detail table reads (the same fields
     // requestLogParameters() logs for a survey-triggered run).
     private function importRetryRequestLog(array $request)
     {
-        $call = end($request['calls'] ?? []) ?: [];
+        $calls = $request['calls'] ?? [];   // end() needs a variable: an expression throws an Error on PHP 8
+        $call = end($calls) ?: [];
 
         return [
             'source' => $request['source'] ?? '',
@@ -462,6 +698,7 @@ trait ImportStatus
     {
         return match ($outcome) {
             'attention' => 'Needs attention',
+            'dismissed' => 'Dismissed',
             'stale' => 'From stored data',
             default => 'OK',
         };

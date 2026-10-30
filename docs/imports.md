@@ -52,6 +52,28 @@ instance for one record, so the verdict always reflects the record's current sta
 followed by a successful re-run shows as OK, while a failed instance #2 stays flagged even after
 instance #3 imports cleanly (`repeat_instance` is logged with every run).
 
+## Dismissing an error
+
+Not every failure is worth fixing: an address that will never geocode, a test record, a field
+nobody needs any more. A run flagged *Needs attention* can be **dismissed** instead (the **Dismiss**
+button beside **Retry this import**, with an optional reason), so it stops being flagged forever.
+
+- **What changes:** the run's outcome reads **Dismissed** (grey). It no longer counts in the
+  "left mapped fields empty" alert, in the record lookup's verdict, or for **Retry all failed**, and
+  the **Needs attention** filter leaves it out (the **Dismissed** filter lists them). Nothing about
+  the run's entries or the record's data changes: the fields are still empty.
+- **Undo:** a dismissed run has an **Undo dismiss** button, which flags it again (and brings its
+  retry button back).
+- **Audit trail:** each dismissal and each undo is its own module log entry
+  (`ADIF import run dismissed` / `ADIF import run dismissal undone`) carrying the run's `run_id`,
+  the user, the time and the reason, plus a line on the project's Logging page. The latest entry
+  for a run decides. These messages deliberately don't start with `API import`, so they are never
+  read as part of a run.
+- **Who can dismiss:** the same users who can retry (Project Design rights); the
+  `dismiss-import` AJAX action re-checks this server-side.
+- A later run for the same record and event (a new survey submission or a retry) supersedes a
+  dismissed one in the record lookup, as it would any other run.
+
 ## Re-running an import
 
 The **Retry this import** button on a flagged run (and **Retry all failed** in the toolbar) re-runs
@@ -59,6 +81,15 @@ the import for the same record, event, instrument and repeat instance through
 `ImportStatus::retryImportRun()`, which calls the existing `Import::importMappedData()`. Nothing
 about the import engine is special-cased for retries.
 
+- **Mapping check first:** before anything runs, `ImportStatus::importRetryMappingCheck()` compares
+  the fields the run left empty with what the project's *current* mappings would import, using the
+  same rules as the import itself (`Import::importPlan()`). If none of those fields is still mapped
+  (mapping removed, field moved off the event, path no longer offered by any source, field changed to
+  an unwritable type), the retry is refused with the reason per field: nothing is fetched, saved or
+  logged, and the button changes to **Mappings changed**. If only some are, the retry goes ahead and
+  its notices name the ones that weren't retried. The import then runs exactly the plan that was
+  checked. A run that doesn't record which fields it left empty (the import threw) is retried as long
+  as any mapping applies to its event and instrument.
 - **Who can retry:** users with Project Design rights (the same rule as configuring the module's
   sources), since a retry writes record data. The AJAX action re-checks this server-side.
 - **Stored data:** by default a retry passes `FetchMode::Live` to the cache, so every request calls
@@ -81,8 +112,11 @@ exactly what failed - including for repeating instruments, whose instance number
 ## Files
 
 - `classes/ImportStatus.php` - the trait: `importRuns()`, `importRecordStatus()`,
-  `importRunNeedsAttention()`, `retryImportRun()`, `importOutcomeLabel()`
+  `importRunNeedsAttention()`, `importRetryMappingCheck()`, `retryImportRun()`, `dismissImportRun()`,
+  `importOutcomeLabel()`
+- `classes/Import.php` - `importPlan()`, the mapping rules shared by imports and the retry check
 - `pages/Imports.php` - the page (linked from the project menu, see `config.json`)
-- `js/imports.js` - the retry buttons' wiring (`module.ajax('retry-import', ...)`)
+- `js/imports.js` - the retry and dismiss buttons' wiring (`module.ajax('retry-import', ...)`,
+  `module.ajax('dismiss-import', ...)`)
 - `css/imports.css` - page styles, building on `test_page.css`
-- `ADIF.php` - the `retry-import` AJAX action and the Imports page's JS bootstrap
+- `ADIF.php` - the `retry-import` and `dismiss-import` AJAX actions and the Imports page's JS bootstrap

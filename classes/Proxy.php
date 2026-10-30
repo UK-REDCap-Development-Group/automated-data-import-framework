@@ -52,36 +52,46 @@ trait Proxy
     {
         $apiFields = [];
         foreach ($this->getApiSources() as $source) {
-            $schema = $source['schema'];
-            if (is_string($schema)) {
-                $schema = json_decode($schema, true);
-            }
-            if (!is_array($schema)) {
-                continue;
-            }
-
-            $fieldList = (isset($schema['fields']) && is_array($schema['fields'])) ? $schema['fields'] : $schema;
-
-            foreach ($fieldList as $entry) {
-                if (is_string($entry)) {
-                    $entry = ['field' => $entry];
-                }
-                if (!is_array($entry) || empty($entry['field'])) {
-                    continue;
-                }
-                $apiFields[] = [
-                    'source' => $source['index'],
-                    'field' => $entry['field'],
-                    'endpoint' => $entry['endpoint'] ?? $source['url'],
-                    'path' => $entry['path'] ?? $entry['endpoint'] ?? '',
-                ];
-            }
+            array_push($apiFields, ...$this->apiFieldsForSource($source['index'], $source['url'], $source['schema']));
         }
 
         // Uploaded tables (see DataTables), whose source is "table:<id>" rather than an index
         array_push($apiFields, ...$this->getDataTableFields());
 
         return $apiFields;
+    }
+
+    // The fields one API source offers, from its URL and schema (a JSON string or decoded array) - the
+    // per-source half of getApiFields(). Separate so the Data Sources page can work out what a source
+    // would offer with settings that haven't been saved yet (see ApiSources::apiSourceBreakage).
+    public function apiFieldsForSource($index, $url, $schema)
+    {
+        if (is_string($schema)) {
+            $schema = json_decode($schema, true);
+        }
+        if (!is_array($schema)) {
+            return [];
+        }
+
+        $fieldList = (isset($schema['fields']) && is_array($schema['fields'])) ? $schema['fields'] : $schema;
+
+        $fields = [];
+        foreach ($fieldList as $entry) {
+            if (is_string($entry)) {
+                $entry = ['field' => $entry];
+            }
+            if (!is_array($entry) || empty($entry['field'])) {
+                continue;
+            }
+            $fields[] = [
+                'source' => $index,
+                'field' => $entry['field'],
+                'endpoint' => $entry['endpoint'] ?? trim((string) $url),
+                'path' => $entry['path'] ?? $entry['endpoint'] ?? '',
+            ];
+        }
+
+        return $fields;
     }
 
     // Pulls the configured API source at $sourceIndex out of the repeatable "api-sources" group.

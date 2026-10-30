@@ -13,6 +13,7 @@ require_once __DIR__ . '/classes/DataTables.php';
 require_once __DIR__ . '/classes/ApiCache.php';
 require_once __DIR__ . '/classes/ImportLog.php';
 require_once __DIR__ . '/classes/ImportStatus.php';
+require_once __DIR__ . '/classes/ApiSources.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -23,6 +24,7 @@ class ADIF extends AbstractExternalModule
     use ApiCache;
     use ImportLog;
     use ImportStatus;
+    use ApiSources;
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -83,7 +85,7 @@ class ADIF extends AbstractExternalModule
     }
 
     // Users who may change the module's configuration, and so the API sources it calls and the
-    // tables uploaded on the Data Tables page
+    // tables uploaded on the Data Sources page
     public function canConfigureApiSources($project_id)
     {
         $user = $this->getUser();
@@ -92,11 +94,13 @@ class ADIF extends AbstractExternalModule
 
     function redcap_every_page_top($project_id)
     {
-        // Adds the "Detect schema" button to each API source in the configuration dialog
+        // Adds the "Detect schema" button to each API source in the configuration dialog, and a note
+        // pointing to the Data Sources page, which edits the same settings
         if ($project_id && self::isModuleManagerPage() && $this->canConfigureApiSources($project_id)) {
             $this->initializeJavascriptModuleObject();
             echo '<script>window.ADIFSchemaDetect = { prefix: ' . json_encode($this->getPrefix())
-                . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
+                . ', module: ' . $this->getJavascriptModuleObjectName()
+                . ', dataSourcesUrl: ' . json_encode($this->getUrl('pages/Data_Sources.php') . '&tab=apis') . ' };</script>';
             $this->includeJS('js/schema_detect.js');
         }
 
@@ -106,6 +110,11 @@ class ADIF extends AbstractExternalModule
             echo '<script>window.ADIFImports = { prefix: ' . json_encode($this->getPrefix())
                 . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
             $this->includeJS('js/imports.js');
+
+            // The Data Sources page's Detect schema buttons and form behaviour (see js/data_sources.js);
+            // like imports.js, it does nothing on pages without its elements
+            echo '<script>window.ADIFDataSources = { module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
+            $this->includeJS('js/data_sources.js');
         }
     }
 
@@ -137,15 +146,33 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'error', 'message' => 'The retry request is missing a valid run id.'];
                 }
 
-                $run = $this->importRunById($project_id, $payload['run_id']);
+                $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
-                    return ['status' => 'error', 'message' => 'That run couldn\'t be found in this project\'s log. Reload the page and try again.'];
+                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
                 }
                 if (trim((string) $run['record']) === '') {
                     return ['status' => 'error', 'message' => 'That run has no record on it, so there is nothing to re-run it for.'];
                 }
 
                 return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
+
+            case 'dismiss-import':
+                // Clears (or, with 'undo', restores) a run's "Needs attention" flag, for failures nobody
+                // intends to fix (see ImportStatus::dismissImportRun). Same users as retrying.
+                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
+                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can dismiss import errors.'];
+                }
+                if (!isset($payload['run_id']) || !is_string($payload['run_id']) || !preg_match('/^[0-9a-f]{12}$/', $payload['run_id'])) {
+                    return ['status' => 'error', 'message' => 'The request is missing a valid run id.'];
+                }
+
+                $run = $this->importRunFromLog($project_id, $payload['run_id']);
+                if ($run === null) {
+                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                }
+
+                return $this->dismissImportRun($project_id, $run, !empty($payload['undo']),
+                    is_string($payload['reason'] ?? null) ? $payload['reason'] : '');
 
             default:
                 return ['status' => 'error', 'message' => "Unknown action: $action"];

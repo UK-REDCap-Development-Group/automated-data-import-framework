@@ -1,7 +1,8 @@
-// Adds a "Detect schema" button beside each API source's schema box in ADIF's configuration dialog.
+// Adds a "Detect schema" button beside each API source's schema box in ADIF's configuration dialog,
+// and a note at the top of the dialog pointing to the Data Sources page, which edits the same settings.
 // The module reads the schema from the API itself (classes/SchemaDetection.php) and the box is filled
 // in, so it's saved with the dialog exactly like a schema typed in by hand.
-// window.ADIFSchemaDetect ({ prefix, module }) is set by ADIF::redcap_every_page_top.
+// window.ADIFSchemaDetect ({ prefix, module, dataSourcesUrl }) is set by ADIF::redcap_every_page_top.
 (function () {
     const settings = window.ADIFSchemaDetect;
     if (!settings || !settings.module) {
@@ -21,10 +22,27 @@
         return input.length ? String(input.val() || '').trim() : '';
     }
 
-    function addButtons() {
-        if (!isAdifDialog()) {
+    // A note pointing to the Data Sources page. Both save the same settings, so either can be used.
+    function addPointer() {
+        const body = $(MODAL).find('.modal-body').first();
+        if (!settings.dataSourcesUrl || !body.length || body.find('.adif-ds-pointer').length) {
             return;
         }
+        const link = $('<a></a>').attr('href', settings.dataSourcesUrl).text('Data Sources page');
+        $('<div class="alert alert-info adif-ds-pointer" style="margin-bottom: 12px;"></div>')
+            .append('<strong>Tip:</strong> API sources are easier to set up on the ADIF ', link,
+                ', with schema detection, a connection test and safe reordering. It saves to these same settings,'
+                + ' so changes made in either place show up in the other.')
+            .prependTo(body);
+    }
+
+    function addButtons() {
+        if (!isAdifDialog()) {
+            // The dialog element is shared by every module's configuration, so don't leave the note behind
+            $(MODAL).find('.adif-ds-pointer').remove();
+            return;
+        }
+        addPointer();
 
         $(MODAL).find(`textarea[name^="schema${INSTANCE_SYMBOL}"]`).each(function () {
             const cell = $(this).closest('td');

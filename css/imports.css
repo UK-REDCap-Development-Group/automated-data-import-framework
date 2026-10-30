@@ -210,3 +210,37 @@
     font-size: 0.85em;
     color: #445;
 }
+
+/* A run whose "Needs attention" was dismissed by hand: muted, neither an error nor an all-clear */
+.adif-imp-run.is-dismissed {
+    border-color: #d5d9dd;
+}
+
+.adif-imp-run.is-dismissed summary {
+    background: #f6f7f8;
+}
+
+/* The dismiss control beside the retry button: an optional reason, then the button */
+.adif-imp-retry-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+}
+
+.adif-imp-dismiss {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.adif-imp-dismiss-reason {
+    width: 240px;
+    max-width: 100%;
+}
+
+/* A dismissal's reason is free text, so long unbroken words must wrap */
+.adif-imp-status-note,
+.adif-imp-explain {
+    overflow-wrap: anywhere;
+}
