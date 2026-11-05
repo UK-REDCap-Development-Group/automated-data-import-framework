@@ -3,16 +3,13 @@ namespace UKModules\ADIF;
 
 /** @var \UKModules\ADIF\ADIF $module */
 
-$pid = (int) ($_GET['pid'] ?? $_POST['pid'] ?? 0);
+// Returns the Mapping page's saved field mappings. The project is the page's own (the URL's pid,
+// checked by REDCap), and only users who may configure the module can read them
+// (see ADIF::requireMappingAccess).
+$pid = $module->requireMappingAccess();
 
-if (empty($pid)) {
-    http_response_code(400);
-    exit(json_encode(['error' => 'Invalid project ID']));
-}
-
-$module->setProjectId($pid);
-$mappings = $module->getProjectSetting('field-mappings') ?? [];
-$displayed = $module->getProjectSetting('displayed-instruments') ?? []; // Load displayed instruments
+$mappings = $module->getProjectSetting('field-mappings', $pid) ?? [];
+$displayed = $module->getProjectSetting('displayed-instruments', $pid) ?? []; // Load displayed instruments
 
 echo json_encode([
     'status' => 'success',

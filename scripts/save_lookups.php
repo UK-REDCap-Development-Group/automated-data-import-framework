@@ -6,11 +6,13 @@ namespace UKModules\ADIF;
 // Saves which REDCap field supplies each [placeholder] in the API sources' endpoint paths, from the
 // Mapping page's lookup prompt, as { "<source>": { "<placeholder>": "<field>" } }, where a source is
 // an API source's index or an uploaded table's "table:<id>". Read back by Import::getLookupField.
+// The project is the page's own (the URL's pid, checked by REDCap), and only users who may configure
+// the module can save (see ADIF::requireMappingAccess).
 
-$pid = (int) ($_POST['pid'] ?? 0);
+$pid = $module->requireMappingAccess();
 $lookups = json_decode($_POST['lookups'] ?? '', true);
 
-if (empty($pid) || !is_array($lookups)) {
+if (!is_array($lookups)) {
     http_response_code(400);
     exit(json_encode(['error' => 'Invalid input']));
 }
@@ -34,8 +36,7 @@ foreach ($lookups as $source => $placeholders) {
     }
 }
 
-$module->setProjectId($pid);
-$module->setProjectSetting('lookup-fields', $clean);
+$module->setProjectSetting('lookup-fields', $clean, $pid);
 
 echo json_encode([
     'status' => 'success',

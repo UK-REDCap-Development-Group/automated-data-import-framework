@@ -92,6 +92,45 @@ class ADIF extends AbstractExternalModule
         return $user && ($user->isSuperUser() || $user->hasDesignRights($project_id));
     }
 
+    // Guards the Mapping page's AJAX scripts (scripts/*.php), which aren't menu links, so the framework
+    // runs neither its link permission check nor any rights check before them. Returns the project id
+    // for the request, or ends it with a JSON error:
+    //   - the project is the one in the URL (?pid=), which REDCap checked the user can access before
+    //     running the script; a pid sent in the request body must be that same project, so a request
+    //     can't be pointed at another project's settings
+    //   - the user must be allowed to configure the module there (Project Design rights, or a super
+    //     user - see canConfigureApiSources), the same rule as the Mapping page and Data Sources page
+    // Checked on every request, so revoking a user's rights takes effect immediately.
+    public function requireMappingAccess()
+    {
+        $fail = function ($status, $message) {
+            http_response_code($status);
+            header('Content-Type: application/json');
+            exit(json_encode(['status' => 'error', 'error' => $message]));
+        };
+
+        $pid = $this->getProjectId();
+        if (empty($pid) || !ctype_digit((string) $pid)) {
+            $fail(400, 'This request isn\'t for a project.');
+        }
+        $pid = (int) $pid;
+
+        if (isset($_POST['pid']) && (string) $_POST['pid'] !== (string) $pid) {
+            $fail(403, 'This request was sent for a different project than the page it came from. Reload the page.');
+        }
+
+        try {
+            $allowed = $this->canConfigureApiSources($pid);
+        } catch (\Throwable $e) {
+            $allowed = false;   // getUser() throws when nobody is logged in
+        }
+        if (!$allowed) {
+            $fail(403, 'Only users with Project Design rights in this project can change its ADIF mappings.');
+        }
+
+        return $pid;
+    }
+
     function redcap_every_page_top($project_id)
     {
         // Adds the "Detect schema" button to each API source in the configuration dialog, and a note
