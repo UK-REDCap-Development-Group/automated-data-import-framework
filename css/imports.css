@@ -286,3 +286,8 @@
     padding: 4px 8px;
     font-size: 0.85em;
 }
+
+/* The background import queue: the card reuses the Never imported card's look */
+.adif-imp-queue-idle {
+    margin: 10px 0 0;
+}

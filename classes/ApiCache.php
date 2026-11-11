@@ -24,6 +24,8 @@ require_once __DIR__ . '/Cache/autoload.php';
 trait ApiCache
 {
     private ?CacheManager $apiCacheManager = null;
+    /** @var int|null the project $apiCacheManager and $apiCacheProviders were built for */
+    private ?int $apiCacheManagerProjectId = null;
     /** @var array<int, ConfiguredApiProvider> sourceIndex => provider */
     private array $apiCacheProviders = [];
 
@@ -135,13 +137,18 @@ trait ApiCache
         ];
     }
 
-    // Built once per request. Providers are rebuilt from the project's current settings each
-    // request, so config changes take effect immediately.
+    // Built once per request and project. Providers are rebuilt from the project's current settings
+    // each request, so config changes take effect immediately. A cron working through the import
+    // queue (see ImportQueue) imports for several projects in one request, so a manager built for
+    // another project is replaced rather than reused: its sources are that project's.
     private function apiCacheManager($projectId)
     {
-        if ($this->apiCacheManager !== null) {
+        if ($this->apiCacheManager !== null && $this->apiCacheManagerProjectId === (int) $projectId) {
             return $this->apiCacheManager;
         }
+        $this->apiCacheManager = null;
+        $this->apiCacheProviders = [];
+        $this->apiCacheManagerProjectId = (int) $projectId;
 
         // Sources whose schema paths pipe in record values ([placeholders]) are treated as
         // identifying unless the designer says the piped values are public codes.

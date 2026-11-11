@@ -171,14 +171,58 @@ Each place is also checked for the values its `[placeholders]` need, using the i
 - The table lists the first 200 places; Import all covers every importable one. Imports run one at a
   time, so the page has to stay open until Import all finishes.
 
+## Background imports
+
+A survey submission no longer waits on the APIs. `redcap_survey_complete` only **queues** the
+import (`ImportQueue::queueImport()`). The module's cron (`adif_import_queue` in `config.json`,
+every 60 seconds) runs it through the same `Import::importMappedData()` and `ImportLog::logImportRun()`
+as every other import. Fields usually fill within a minute or two of submission. A queued import
+that fails is flagged here like any other run, and retried, dismissed or included in Retry all
+failed the same way.
+
+- **Opting out:** a project whose next survey pipes imported values straight away can tick *run each
+  import while the survey respondent waits* (`import-immediately`) in its module settings. Imports
+  then run in the hook, before the completion page, as they used to.
+- **What's queued:** only imports that will call an API (`Import::importPlan()` has requests). An
+  import with nothing to request finishes instantly, so it still runs in the hook. If the queue entry
+  can't be written, the import also runs in the hook, so nothing is lost.
+- **Where the queue lives:** the module log, like the runs. `ADIF import queued` is written per
+  submission (record, event, instrument, instance and a `queue_id`). `ADIF import queue started` is
+  written before each attempt, and `ADIF import queue done` (with the `run_id` and outcome) once
+  it's finished. An import is pending until its done entry exists. Appending to the log is atomic,
+  so simultaneous submissions can't overwrite each other's place in the queue. None of these messages
+  starts with `API import`, so they're never read as runs.
+- **The cron:** works through every enabled project's queue, oldest first, for up to four minutes
+  per run; the next run carries on from there. It sets `$_GET['pid']` to each project in turn, as the
+  framework documents for crons, since settings are read for the current project. Code on the import
+  path reads event names and the record ID field from `\Project` rather than `REDCap::isLongitudinal()`
+  / `getRecordIdField()` / `getEventNames()`, which only work on a project's own pages. The API cache
+  manager is rebuilt when the project changes, so one project's sources are never used for another.
+- **Duplicates:** several entries for the same import (record, event, instrument, instance), such as
+  a survey submitted twice before the cron ran, run once and are all closed with that run.
+- **Crashes:** an import that stops partway (a PHP fatal error, a killed process) leaves its started
+  entry without a done entry. It's tried again on the next run. After three starts it's given up on
+  and logged as a failed run (*Needs attention*), which says why, so it can be retried once the cause
+  is fixed.
+- **On the Imports page:** a *Queued* card lists pending imports with their age, any partial
+  attempts, and when the cron last ran (`import-queue-last-run`, a system setting). When the oldest
+  has waited more than 10 minutes, the page says REDCap's cron may not be running. **Run queued imports
+  now** (`run-import-queue`, Project Design rights) works through the project's queue in short
+  batches without waiting for the cron. The per-import lock it shares with the cron stops the same
+  import from running twice at once. Queued imports are left off the *Never imported* list, which
+  would otherwise show them in the minute before they run.
+
 ## Files
 
 - `classes/ImportStatus.php` - the trait: `importRuns()`, `importRecordStatus()`,
   `importRunNeedsAttention()`, `importRetryMappingCheck()`, `retryImportRun()`, `dismissImportRun()`,
   `importRetryTargets()`, `importNeverAttempted()`, `runFirstImport()`, `importOutcomeLabel()`
+- `classes/ImportQueue.php` - the background queue: `queueImport()`, `importQueuePending()`,
+  `processImportQueue()` (the cron), `processProjectImportQueue()`
 - `classes/Import.php` - `importPlan()`, the mapping rules shared by imports and the retry check
 - `pages/Imports.php` - the page (linked from the project menu, see `config.json`)
 - `js/imports.js` - the retry, dismiss and import buttons' wiring (`module.ajax('retry-import', ...)`,
   `module.ajax('dismiss-import', ...)`, `module.ajax('import-unattempted', ...)`)
 - `css/imports.css` - page styles, building on `test_page.css`
-- `ADIF.php` - the `retry-import`, `dismiss-import` and `import-unattempted` AJAX actions and the Imports page's JS bootstrap
+- `ADIF.php` - the survey hook that queues imports; the `retry-import`, `dismiss-import`,
+  `import-unattempted` and `run-import-queue` AJAX actions and the Imports page's JS bootstrap

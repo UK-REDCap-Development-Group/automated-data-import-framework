@@ -13,6 +13,7 @@ require_once __DIR__ . '/classes/DataTables.php';
 require_once __DIR__ . '/classes/ApiCache.php';
 require_once __DIR__ . '/classes/ImportLog.php';
 require_once __DIR__ . '/classes/ImportStatus.php';
+require_once __DIR__ . '/classes/ImportQueue.php';
 require_once __DIR__ . '/classes/ApiSources.php';
 
 class ADIF extends AbstractExternalModule
@@ -24,6 +25,7 @@ class ADIF extends AbstractExternalModule
     use ApiCache;
     use ImportLog;
     use ImportStatus;
+    use ImportQueue;
     use ApiSources;
 
     // provided courtesy of Scott J. Pearson
@@ -216,6 +218,19 @@ class ADIF extends AbstractExternalModule
                 return $this->runFirstImport($project_id, (string) $record, (int) $eventId,
                     $instrument === '' ? null : $instrument, (int) $instance);
 
+            case 'run-import-queue':
+                // Runs this project's queued imports now, without waiting for the cron (see
+                // ImportQueue::processProjectImportQueue). A short batch per request, so the page can show
+                // progress and no request runs long; the page sends it again while imports remain.
+                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
+                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can run queued imports.'];
+                }
+                try {
+                    return ['status' => 'success'] + $this->processProjectImportQueue($project_id, time() + 20, 25);
+                } catch (\Throwable $e) {
+                    return ['status' => 'error', 'message' => 'The queued imports couldn\'t be run: ' . $e->getMessage()];
+                }
+
             case 'dismiss-import':
                 // Clears (or, with 'undo', restores) a run's "Needs attention" flag, for failures nobody
                 // intends to fix (see ImportStatus::dismissImportRun). Same users as retrying.
@@ -259,12 +274,29 @@ class ADIF extends AbstractExternalModule
     }
 
     // Pulls from the configured APIs and saves the mapped values into the record once a survey is submitted.
+    // By default the import is only queued here, and the module's cron runs it within a minute or so
+    // (see ImportQueue), so the respondent reaches the completion page without waiting on the APIs.
+    // Projects whose next survey pipes imported values straight away can tick "import-immediately" to
+    // run it here instead, while the respondent waits. Only imports that will call an API are queued;
+    // one with nothing to request finishes instantly, so it still runs here. If the queue can't be
+    // written to, the import runs here too, rather than being lost.
     // Failures are logged rather than thrown so the respondent still reaches the completion page.
     // Each endpoint hit and what it returned goes to the module log, and a summary to the project's
     // Logging page (see ImportLog). Failed runs and the fields they left empty are then visible on the
     // Imports page (see ImportStatus and pages/Imports.php), where they can also be re-run by hand.
     function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
     {
+        if ($this->importsRunInBackground($project_id)) {
+            try {
+                if (!empty($this->importPlan($project_id, $event_id, $instrument, $repeat_instance)['requests'])) {
+                    $this->queueImport($project_id, $record, $event_id, $instrument, $repeat_instance);
+                    return;
+                }
+            } catch (\Throwable $e) {
+                error_log("ADIF: couldn't queue the import for record $record, so it runs now instead: " . $e->getMessage());
+            }
+        }
+
         $start = microtime(true);
         try {
             $summary = $this->importMappedData($project_id, $record, $event_id, $instrument, $repeat_instance);

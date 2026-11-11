@@ -335,7 +335,8 @@ trait ImportStatus
     // of its instances - where:
     //   - the record has data there, so the event has happened (events it hasn't reached are left alone)
     //   - every field the current mappings import there is empty
-    //   - no logged run has requested any of those fields there (see importAttemptedFields)
+    //   - no logged run has requested any of those fields there (see importAttemptedFields), and no
+    //     import for the record's event is waiting in the background queue
     // Each entry: record, event_id, event_name (null in a classic project), instrument (the repeating
     // instrument, or null for the event's other mapped fields), repeat_instance, repeats, fields (the
     // mapped fields there), missing (why lookup values the import needs can't be read from the record
@@ -388,6 +389,12 @@ trait ImportStatus
 
         $eventIds = $project->longitudinal ? array_flip($project->getUniqueEventNames()) : [];
         $attempted = $this->importAttemptedFields($projectId, $project, $dictionary, $record);
+        // An import waiting in the background queue (see ImportQueue) is about to run, so its event
+        // isn't listed: the queue card shows it instead
+        $queued = [];
+        foreach ($this->importQueuePending($projectId, $record, 5000) as $item) {
+            $queued[$item['record']][(int) $item['event_id']] = true;
+        }
 
         $units = [];
         foreach ($rowsByRecord as $name => $rows) {
@@ -420,7 +427,8 @@ trait ImportStatus
 
                     if (!self::importRowHasData($row, $recordIdField)
                         || !self::importFieldsEmpty($row, $shape['fields'], $dictionary)
-                        || self::importUnitAttempted($attempted, $name, $shape, $instance)) {
+                        || self::importUnitAttempted($attempted, $name, $shape, $instance)
+                        || isset($queued[$name][$shape['event_id']])) {
                         continue;
                     }
 
@@ -1140,17 +1148,18 @@ trait ImportStatus
         return empty($lines) ? null : implode("\n", $lines);
     }
 
-    // An event's unique name for the log's event_id, or null for classic projects and unknown ids
-    private function importEventName($projectId, $eventId)
+    // An event's unique name for the log's event_id, or null for classic projects and unknown ids.
+    // Reads the project itself, so it also works where REDCap::isLongitudinal() doesn't (a cron); the
+    // project is loaded once per request, since the run list asks for every run's event.
+    public function importEventName($projectId, $eventId)
     {
         if ($eventId === null || $eventId === '' || !is_numeric($eventId)) {
             return null;
         }
         try {
-            if (!REDCap::isLongitudinal()) {
-                return null;
-            }
-            return REDCap::getEventNames(true, false, (int) $eventId) ?: null;
+            static $projects = [];
+            $projects[(int) $projectId] ??= new \Project((int) $projectId);
+            return self::importUniqueEventName($projects[(int) $projectId], $eventId);
         } catch (\Throwable $e) {
             return null;
         }

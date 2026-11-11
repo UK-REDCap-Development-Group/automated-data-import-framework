@@ -2,7 +2,8 @@
 // redcap_module_ajax and ImportStatus::retryImportRun) for one run, or sequentially for every import
 // whose latest run needs attention, and rewrites each run's pill and detail area with the result.
 // Also runs the first import for records listed under "Never imported" ('import-unattempted', see
-// ImportStatus::runFirstImport), one at a time or all in a row.
+// ImportStatus::runFirstImport), one at a time or all in a row, and the background import queue
+// on demand ('run-import-queue', see ImportQueue).
 // window.ADIFImports ({ prefix, module }) is set by ADIF::redcap_every_page_top.
 (function () {
     const settings = window.ADIFImports;
@@ -442,5 +443,61 @@
             });
         };
         next();
+    });
+
+    // "Run queued imports now" (pages/Imports.php): works through the background queue without
+    // waiting for the cron ('run-import-queue', see ImportQueue::processProjectImportQueue). Each
+    // request runs a short batch; it's sent again while imports remain and the last batch made progress.
+    $(document).on('click', '#adif-imp-run-queue', function () {
+        const $button = $(this);
+        const $progress = $('#adif-imp-queue-progress');
+        if (!confirm('Run the queued imports now? Each one calls the APIs its mappings use and fills the record\'s fields.'
+                + ' Keep this page open until it finishes.')) {
+            return;
+        }
+
+        $button.prop('disabled', true);
+        const totals = { ran: 0, attention: 0, abandoned: 0 };
+        const summary = function (remaining, busy) {
+            const parts = [(totals.ran + totals.attention) + ' run'];
+            if (totals.attention) {
+                parts.push(totals.attention + ' need attention');
+            }
+            if (totals.abandoned) {
+                parts.push(totals.abandoned + ' given up on after stopping partway');
+            }
+            if (busy) {
+                parts.push(busy + ' being run by the cron right now');
+            }
+            if (remaining) {
+                parts.push(remaining + ' still waiting');
+            }
+            return parts.join(', ');
+        };
+
+        const step = function () {
+            $progress.text('Running queued imports… ' + summary(0, 0) + ' so far.');
+            settings.module.ajax('run-import-queue', {})
+                .then(function (response) {
+                    if (!response || response.status !== 'success') {
+                        throw new Error((response && response.message) || 'The queued imports couldn\'t be run.');
+                    }
+                    totals.ran += response.ran || 0;
+                    totals.attention += response.attention || 0;
+                    totals.abandoned += response.abandoned || 0;
+                    const progressed = (response.ran || 0) + (response.attention || 0) + (response.abandoned || 0);
+                    if (response.remaining > 0 && progressed > 0) {
+                        step();
+                        return;
+                    }
+                    $button.prop('disabled', false);
+                    $progress.text(summary(response.remaining || 0, response.busy || 0) + '. Reload the page to see the new runs.');
+                })
+                .catch(function (error) {
+                    $button.prop('disabled', false);
+                    $progress.text(summary(0, 0) + '. Stopped: ' + ((error && error.message) || String(error)));
+                });
+        };
+        step();
     });
 })();

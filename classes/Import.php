@@ -34,9 +34,12 @@ trait Import
             return $summary;
         }
 
+        // Read from the project itself rather than REDCap::getRecordIdField() and friends, which only
+        // work on a project's own pages: queued imports run from a cron (see ImportQueue)
         $dictionary = REDCap::getDataDictionary($projectId, 'array');
-        $recordIdField = REDCap::getRecordIdField();
-        $eventName = REDCap::isLongitudinal() ? REDCap::getEventNames(true, false, $eventId) : null;
+        $project = new \Project($projectId);
+        $recordIdField = $project->table_pk;
+        $eventName = self::importUniqueEventName($project, $eventId);
 
         // Rows keyed by repeat instrument + instance, since saveData takes one row per instance
         $rows = [];
@@ -309,13 +312,24 @@ trait Import
     {
         $forms = array_values($project->eventsForms[$eventId] ?? []);
         return [
-            'event_name' => REDCap::isLongitudinal() ? (REDCap::getEventNames(true, false, $eventId) ?: null) : null,
+            'event_name' => self::importUniqueEventName($project, $eventId),
             'instrument' => (string) $instrument,
             'instance' => max(1, (int) $repeatInstance),
             'event_forms' => $forms,
             'repeating_forms' => array_values(array_filter($forms, fn($form) => $project->isRepeatingForm($eventId, $form))),
             'event_repeats' => (bool) $project->isRepeatingEvent($eventId),
         ];
+    }
+
+    // An event's unique name, or null in a classic project (whose export rows carry no event name).
+    // Works from a cron as well as a project page, unlike REDCap::isLongitudinal()/getEventNames().
+    private static function importUniqueEventName($project, $eventId)
+    {
+        if (!$project->longitudinal) {
+            return null;
+        }
+        $names = $project->getUniqueEventNames();
+        return is_array($names) ? ($names[(int) $eventId] ?? null) : null;
     }
 
     // Replaces [placeholder]s in an endpoint path with this record's values, e.g. "/people/[email]"

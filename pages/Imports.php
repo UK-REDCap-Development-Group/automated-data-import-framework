@@ -43,6 +43,22 @@ if ($canRetry) {
 $listedRunIds = array_flip(array_column($allRuns, 'run_id'));
 $hiddenTargets = count(array_filter($retryTargets, fn($runId) => !isset($listedRunIds[$runId])));
 
+// Imports waiting in the background queue (see ImportQueue), and when the cron last worked through
+// it, so a cron that isn't running shows up here rather than as fields that never fill
+$runInBackground = $module->importsRunInBackground($pid);
+$queuedImports = [];
+$queueError = null;
+try {
+    $queuedImports = $module->importQueuePending($pid, $recordFilter !== '' ? $recordFilter : null, 500);
+} catch (\Throwable $e) {
+    $queueError = $e->getMessage();
+}
+$queueLastRun = (int) $module->getSystemSetting('import-queue-last-run');
+$queueOldest = empty($queuedImports) ? null : min(array_column($queuedImports, 'queued'));
+$queueOverdue = $queueOldest !== null && time() - $queueOldest > $module::$importQueueOverdueSeconds;
+// The queue card lists this many; Run queued imports now still works through all of them
+$queueShownCap = 50;
+
 // Records with data whose mapped fields are empty and have never had an import tried - usually
 // entered before the module was enabled (see ImportStatus::importNeverAttempted)
 $neverImported = [];
@@ -160,6 +176,22 @@ function adif_imp_field_list($fields)
     return '<span title="' . adif_imp_h(implode(', ', $fields)) . '">' . adif_imp_h($text) . '</span>';
 }
 
+// "just now", "4 min ago", "3 h ago", or the date for anything older than a day
+function adif_imp_ago($time)
+{
+    $seconds = time() - (int) $time;
+    if ($seconds < 60) {
+        return 'just now';
+    }
+    if ($seconds < 3600) {
+        return floor($seconds / 60) . ' min ago';
+    }
+    if ($seconds < 86400) {
+        return floor($seconds / 3600) . ' h ago';
+    }
+    return date('Y-m-d H:i', (int) $time);
+}
+
 function adif_imp_instrument($run)
 {
     if ($run['instrument'] === null || $run['instrument'] === '') {
@@ -270,6 +302,74 @@ function adif_imp_instrument($run)
                 <?php endif; ?>
             <?php endif; ?>
         </section>
+    <?php endif; ?>
+
+    <?php if ($queueError !== null): ?>
+        <div class="adif-alert adif-alert-error" role="alert">Couldn't read the background import queue:
+            <?= adif_imp_h($queueError) ?></div>
+    <?php elseif (!empty($queuedImports)): ?>
+        <section class="adif-imp-never adif-imp-queue" id="adif-imp-queue">
+            <h4>Queued: <?= count($queuedImports) ?> import<?= count($queuedImports) === 1 ? '' : 's' ?> waiting to
+                run in the background<?= $recordFilter !== '' ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></h4>
+            <p class="adif-imp-explain">Imports queued after survey submissions, so respondents don't wait on the
+                APIs. REDCap's cron runs them about once a minute; the queue last ran
+                <strong><?= $queueLastRun > 0 ? adif_imp_h(adif_imp_ago($queueLastRun)) : 'never' ?></strong>.
+                Each one then appears in the run list below like any other import.</p>
+            <?php if ($queueOverdue): ?>
+                <div class="adif-alert adif-alert-error" role="alert">The oldest has been waiting since
+                    <?= adif_imp_h(date('Y-m-d H:i', $queueOldest)) ?>. REDCap's cron may not be running ADIF's job
+                    (<code>adif_import_queue</code>) &mdash; ask your REDCap administrator to check it.<?= $canRetry
+                        ? ' In the meantime you can run them from here.' : '' ?></div>
+            <?php endif; ?>
+            <?php if ($canRetry): ?>
+                <div class="adif-imp-toolbar">
+                    <button type="button" id="adif-imp-run-queue" class="btn btn-primaryrc btn-sm"
+                            title="Runs this project's queued imports now instead of waiting for the cron, a few at a time">
+                        Run queued imports now
+                    </button>
+                    <span id="adif-imp-queue-progress" class="adif-imp-progress" aria-live="polite"></span>
+                </div>
+            <?php endif; ?>
+            <div class="adif-imp-scroll">
+                <table class="adif-headers-table adif-imp-never-table">
+                    <thead>
+                        <tr>
+                            <th>Record</th>
+                            <th>Event</th>
+                            <th>Instrument</th>
+                            <th>Queued</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach (array_slice($queuedImports, 0, $queueShownCap) as $item): ?>
+                            <?php $eventName = $module->importEventName($pid, $item['event_id']); ?>
+                            <tr>
+                                <td><?= adif_imp_record_link($item['record'], $pid) ?></td>
+                                <td><?= $eventName !== null ? adif_imp_h($eventName) : 'Single event' ?></td>
+                                <td><?= $item['instrument'] !== null ? adif_imp_h($item['instrument'])
+                                        . ($item['repeat_instance'] > 1 ? ' #' . (int) $item['repeat_instance'] : '') : '&mdash;' ?></td>
+                                <td title="<?= adif_imp_h(date('Y-m-d H:i:s', $item['queued'])) ?>"><?= adif_imp_h(adif_imp_ago($item['queued'])) ?></td>
+                                <td><?= $item['attempts'] > 0
+                                        ? '<span class="adif-status-pill adif-status-stale">Stopped partway ' . (int) $item['attempts']
+                                            . ' time' . ($item['attempts'] === 1 ? '' : 's') . '</span>'
+                                        : '<span class="adif-status-pill adif-status-none">Waiting</span>' ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if (count($queuedImports) > $queueShownCap): ?>
+                <p class="adif-imp-note">Showing the oldest <?= $queueShownCap ?> of <?= count($queuedImports) ?>.</p>
+            <?php endif; ?>
+        </section>
+    <?php elseif ($runInBackground): ?>
+        <p class="adif-imp-note adif-imp-queue-idle">Imports run in the background after each survey submission.
+            Nothing is waiting; the queue last ran <?= $queueLastRun > 0 ? adif_imp_h(adif_imp_ago($queueLastRun))
+                : 'never &mdash; if surveys have been submitted since the module was enabled, check that REDCap\'s cron is running' ?>.</p>
+    <?php else: ?>
+        <p class="adif-imp-note adif-imp-queue-idle">Imports run while survey respondents wait (<em>run each import while the
+            survey respondent waits</em> is ticked in this project's ADIF settings).</p>
     <?php endif; ?>
 
     <?php if ($neverImportedError !== null): ?>

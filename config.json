@@ -52,7 +52,17 @@
         "detect-schema",
         "retry-import",
         "dismiss-import",
-        "import-unattempted"
+        "import-unattempted",
+        "run-import-queue"
+    ],
+    "crons": [
+        {
+            "cron_name": "adif_import_queue",
+            "cron_description": "ADIF: runs the API imports queued after survey submissions",
+            "method": "processImportQueue",
+            "cron_frequency": "60",
+            "cron_max_run_time": "600"
+        }
     ],
     "links": {
         "project": [
@@ -189,6 +199,11 @@
                     ]
                 }
             ]
+        },
+        {
+            "key": "import-immediately",
+            "name": "<b>Imports:</b> run each import while the survey respondent waits, before their completion page appears. Leave unchecked (recommended) to run imports in the background, usually within a minute or two of submission, so a slow or unavailable API never holds up respondents. Check this only if a later survey needs to show imported values straight away.",
+            "type": "checkbox"
         },
         {
             "key": "show-api-test-page",
