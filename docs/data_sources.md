@@ -1,6 +1,6 @@
 # The Data Sources page
 
-Everything a project imports from, in one place (`pages/Data_Sources.php`, formerly the Data Tables
+Everything a project imports from, in one place (`pages/DataSources.php`, formerly the Data Tables
 page; `pages/Data_Tables.php` now redirects here). Two tabs:
 
 - **API connections** (`pages/data_sources/apis.php`): add, edit, test, reorder and delete API sources.
@@ -60,7 +60,7 @@ size and the start of the response. `[placeholders]` must be replaced with a rea
   `deleteApiSource()`, `moveApiSource()`, `testApiSource()`
 - `classes/Proxy.php` - `apiFieldsForSource()`, the per-source half of `getApiFields()`, used to
   check what a source would offer with unsaved settings
-- `pages/Data_Sources.php`, `pages/data_sources/apis.php`, `pages/data_sources/tables.php`
+- `pages/DataSources.php`, `pages/data_sources/apis.php`, `pages/data_sources/tables.php`
 - `js/data_sources.js` - show/hide dependent fields, the URL-change warning, Detect schema
   (the existing `detect-schema` AJAX action), the unsaved-changes warning
 - `css/data_sources.css` - tabs and the API tab, on top of `test_page.css` and `data_tables.css`

@@ -55,8 +55,11 @@ trait Import
 
             $apiPath = $request['path'];
             $pipedValues = [];
+            $pipeNotices = [];
             try {
-                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'], $dictionary, $pipedValues);
+                $apiPath = $this->pipeRecordValues($projectId, $record, $eventId, $request['path'], $request['source'],
+                    $dictionary, $pipedValues, $plan['lookup_context'] ?? null, $pipeNotices);
+                array_push($summary['notices'], ...$pipeNotices);
                 // Goes through the cache (see ApiCache): when the server and the project both cache this
                 // source it may be answered locally; otherwise it's sent to the API.
                 $fetched = $this->fetchApiJson($projectId, $record, $request['source'], $apiPath, $modeOverride);
@@ -148,11 +151,13 @@ trait Import
     //               [source, path, fields => [[field, path, repeatInstrument, repeatInstance], ...]]
     //   skipped   - "name: reason" lines for mappings that can't be imported, as the summary reports them
     //   unusable  - [field => reason] for mapped fields that can't be imported, by field
+    //   lookup_context - where the import is happening, for reading [placeholder] values from the
+    //               right event and instance (see importLookupContext() and pipeRecordValues())
     // Only reads settings and metadata - nothing is fetched or saved - so the retry can check a run
     // against it before re-running anything (see ImportStatus::importRetryMappingCheck).
     public function importPlan($projectId, $eventId, $instrument = null, $repeatInstance = 1)
     {
-        $plan = ['requests' => [], 'skipped' => [], 'unusable' => []];
+        $plan = ['requests' => [], 'skipped' => [], 'unusable' => [], 'lookup_context' => null];
 
         $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
         if (empty($mappings)) {
@@ -162,6 +167,7 @@ trait Import
         $project = new \Project($projectId);
         $dictionary = REDCap::getDataDictionary($projectId, 'array');
         $apiFields = $this->getApiFields();
+        $plan['lookup_context'] = $this->importLookupContext($project, $eventId, $instrument, $repeatInstance);
 
         foreach ($mappings as $form => $fields) {
             if (!isset($project->eventsForms[$eventId]) || !in_array($form, $project->eventsForms[$eventId])) {
@@ -295,10 +301,30 @@ trait Import
         return $field !== '' ? $field : $placeholder;
     }
 
+    // Where an import is happening, so a [placeholder]'s value is read from the right row of the
+    // record (see importLookupValue()): the event's unique name (null in a classic project), the
+    // instrument and instance being imported, the forms designated in the event, which of them are
+    // repeating instruments there, and whether the event itself repeats.
+    private function importLookupContext($project, $eventId, $instrument, $repeatInstance)
+    {
+        $forms = array_values($project->eventsForms[$eventId] ?? []);
+        return [
+            'event_name' => REDCap::isLongitudinal() ? (REDCap::getEventNames(true, false, $eventId) ?: null) : null,
+            'instrument' => (string) $instrument,
+            'instance' => max(1, (int) $repeatInstance),
+            'event_forms' => $forms,
+            'repeating_forms' => array_values(array_filter($forms, fn($form) => $project->isRepeatingForm($eventId, $form))),
+            'event_repeats' => (bool) $project->isRepeatingEvent($eventId),
+        ];
+    }
+
     // Replaces [placeholder]s in an endpoint path with this record's values, e.g. "/people/[email]"
-    // becomes "/people/jane%40example.com". Each placeholder is read from its lookup field.
-    // $values receives [placeholder => value], so callers can keep the values out of what they log.
-    private function pipeRecordValues($projectId, $record, $eventId, $apiPath, $sourceIndex, $dictionary, &$values = [])
+    // becomes "/people/jane%40example.com". Each placeholder is read from its lookup field, in the row
+    // importLookupValue() picks for where the import is happening ($context, from importPlan()).
+    // $values receives [placeholder => value], so callers can keep the values out of what they log,
+    // and $notices any note worth logging about which row a value came from.
+    private function pipeRecordValues($projectId, $record, $eventId, $apiPath, $sourceIndex, $dictionary, &$values = [],
+                                      $context = null, &$notices = [])
     {
         if (!preg_match_all('/\[([a-z][a-z0-9_]*)\]/', $apiPath, $matches)) {
             return $apiPath;
@@ -314,8 +340,8 @@ trait Import
             $fieldFor[$placeholder] = $field;
         }
 
-        // Not limited to $eventId: a lookup value such as an address is often collected in another
-        // event (e.g. baseline) than the one being imported into, which is still preferred below.
+        // Every event and instance: a lookup value such as an address is often collected in another
+        // event (e.g. baseline) than the one being imported into
         $data = json_decode(REDCap::getData([
             'project_id' => $projectId,
             'return_format' => 'json',
@@ -323,33 +349,92 @@ trait Import
             'fields' => array_values(array_unique($fieldFor)),
         ]), true) ?: [];
 
-        if (REDCap::isLongitudinal()) {
-            $eventName = REDCap::getEventNames(true, false, $eventId);
-            usort($data, function ($a, $b) use ($eventName) {
-                return (($b['redcap_event_name'] ?? '') === $eventName) <=> (($a['redcap_event_name'] ?? '') === $eventName);
-            });
-        }
+        $context = $context ?? $this->importLookupContext(new \Project($projectId), $eventId, null, 1);
 
-        // A field only has a value on one of the returned rows (an event, or a repeat instance),
-        // so take the first non-blank one.
         $values = [];
         foreach ($fieldFor as $placeholder => $field) {
-            $values[$placeholder] = '';
-            foreach ($data as $row) {
-                if (isset($row[$field]) && $row[$field] !== '') {
-                    $values[$placeholder] = $row[$field];
-                    break;
-                }
-            }
-            if ($values[$placeholder] === '') {
-                $source = $field === $placeholder ? "[$field]" : "[$placeholder] (field $field)";
-                throw new \Exception("Record $record has no value for $source, which the endpoint needs.");
-            }
+            $values[$placeholder] = $this->importLookupValue($data, $field, (string) ($dictionary[$field]['form_name'] ?? ''),
+                $context, $placeholder, $record, $notices);
         }
 
         return preg_replace_callback('/\[([a-z][a-z0-9_]*)\]/', function ($match) use ($values) {
             return rawurlencode($values[$match[1]]);
         }, $apiPath);
+    }
+
+    // Picks a lookup field's value from the record's rows (getData() returns one per event, and one
+    // per instance of a repeating instrument or event), for an import in $context:
+    //   1. The lookup field is on the instrument being imported, and that instrument repeats: only the
+    //      same instance is used. Another instance's value would be another address.
+    //   2. The event being imported into repeats: only the same instance of the event is used.
+    //   3. Otherwise the event's own (non-repeating) value, then another event's - e.g. an address
+    //      collected at baseline - as before repeating instruments were handled.
+    //   4. Failing those, the field is on a repeating instrument or event other than the one being
+    //      imported, so there's no matching instance: the most recent instance (highest number) is
+    //      used, and a notice says which.
+    // Throws when there's no value to use. Messages name fields and instances, never values.
+    private function importLookupValue(array $rows, $field, $form, array $context, $placeholder, $record, array &$notices)
+    {
+        $where = $field === $placeholder ? "[$field]" : "[$placeholder] (field $field)";
+        $sameEvent = fn($row) => $context['event_name'] === null || ($row['redcap_event_name'] ?? null) === $context['event_name'];
+        $kind = function ($row) {
+            if ((string) ($row['redcap_repeat_instance'] ?? '') === '') {
+                return 'plain';
+            }
+            return (string) ($row['redcap_repeat_instrument'] ?? '') !== '' ? 'instrument' : 'event';
+        };
+        $filled = array_values(array_filter($rows, fn($row) => isset($row[$field]) && (string) $row[$field] !== ''));
+        $instance = $context['instance'];
+        $formHere = in_array($form, $context['event_forms'], true);
+
+        if ($formHere && in_array($form, $context['repeating_forms'], true) && $form === $context['instrument']) {
+            foreach ($filled as $row) {
+                if ($sameEvent($row) && $kind($row) === 'instrument' && $row['redcap_repeat_instrument'] === $form
+                    && (int) $row['redcap_repeat_instance'] === $instance) {
+                    return (string) $row[$field];
+                }
+            }
+            throw new \Exception("Record $record has no value for $where in instance $instance of $form, which the"
+                . ' endpoint needs.');
+        }
+
+        if ($formHere && $context['event_repeats'] && !in_array($form, $context['repeating_forms'], true)) {
+            foreach ($filled as $row) {
+                if ($sameEvent($row) && $kind($row) === 'event' && (int) $row['redcap_repeat_instance'] === $instance) {
+                    return (string) $row[$field];
+                }
+            }
+            throw new \Exception("Record $record has no value for $where in instance $instance of this event, which the"
+                . ' endpoint needs.');
+        }
+
+        // The event's own value first, then other events', in the order REDCap returns them
+        foreach ([true, false] as $inThisEvent) {
+            foreach ($filled as $row) {
+                if ($kind($row) === 'plain' && $sameEvent($row) === $inThisEvent) {
+                    return (string) $row[$field];
+                }
+            }
+        }
+
+        // Only on a repeating instrument or event other than the one being imported: the latest instance
+        $latest = null;
+        foreach ($filled as $row) {
+            if ($kind($row) !== 'plain' && ($latest === null || (int) $row['redcap_repeat_instance'] >= (int) $latest['redcap_repeat_instance'])) {
+                $latest = $row;
+            }
+        }
+        if ($latest !== null) {
+            $from = $kind($latest) === 'instrument' ? $latest['redcap_repeat_instrument'] : 'its repeating event';
+            if (!empty($latest['redcap_event_name']) && $latest['redcap_event_name'] !== $context['event_name']) {
+                $from .= " in {$latest['redcap_event_name']}";
+            }
+            $notices[] = "$where was read from instance {$latest['redcap_repeat_instance']} of $from, the most recent,"
+                . ' since it\'s on a repeating instrument or event other than the one being imported.';
+            return (string) $latest[$field];
+        }
+
+        throw new \Exception("Record $record has no value for $where, which the endpoint needs.");
     }
 
     // Splits a mapping path into segments, matching apiPathSegments() on the Mapping page:

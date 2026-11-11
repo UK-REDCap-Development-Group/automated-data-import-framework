@@ -139,7 +139,7 @@ class ADIF extends AbstractExternalModule
             $this->initializeJavascriptModuleObject();
             echo '<script>window.ADIFSchemaDetect = { prefix: ' . json_encode($this->getPrefix())
                 . ', module: ' . $this->getJavascriptModuleObjectName()
-                . ', dataSourcesUrl: ' . json_encode($this->getUrl('pages/Data_Sources.php') . '&tab=apis') . ' };</script>';
+                . ', dataSourcesUrl: ' . json_encode($this->getUrl('pages/DataSources.php') . '&tab=apis') . ' };</script>';
             $this->includeJS('js/schema_detect.js');
         }
 
@@ -194,6 +194,27 @@ class ADIF extends AbstractExternalModule
                 }
 
                 return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
+
+            case 'import-unattempted':
+                // Runs the first import for a record listed under "Never imported" on the Imports page
+                // (see ImportStatus::runFirstImport), which re-checks that it's still pending. Writes record
+                // data, so it's limited to the same users who can retry imports.
+                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
+                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can run imports from here.'];
+                }
+                $record = $payload['record'] ?? null;
+                $eventId = $payload['event_id'] ?? null;
+                $instrument = $payload['instrument'] ?? '';
+                $instance = $payload['instance'] ?? 1;
+                if (!is_scalar($record) || trim((string) $record) === '' || strlen((string) $record) > 100
+                    || !is_numeric($eventId) || (int) $eventId < 1
+                    || !is_string($instrument) || ($instrument !== '' && !preg_match('/^[a-z][a-z0-9_]*$/', $instrument))
+                    || !is_numeric($instance) || (int) $instance < 1) {
+                    return ['status' => 'error', 'message' => 'The import request is missing its record, event or instance.'];
+                }
+
+                return $this->runFirstImport($project_id, (string) $record, (int) $eventId,
+                    $instrument === '' ? null : $instrument, (int) $instance);
 
             case 'dismiss-import':
                 // Clears (or, with 'undo', restores) a run's "Needs attention" flag, for failures nobody

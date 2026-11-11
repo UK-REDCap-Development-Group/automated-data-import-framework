@@ -11,6 +11,9 @@ answers the two questions that matter:
    event for one record, with a verdict.
 3. **Can it be fixed from here?** Yes: any run flagged *Needs attention* has a retry button (see
    "Re-running an import" below).
+4. **Which records have never been imported at all?** The *Never imported* card lists records that
+   have data but whose mapped fields are empty and that no import has ever tried - typically records
+   entered before the module was enabled - and runs their first import (see "Records never imported").
 
 ## How runs are reconstructed
 
@@ -109,14 +112,73 @@ about the import engine is special-cased for retries.
 The retry reads its target (record, event, instrument, instance) from the logged run, so it re-runs
 exactly what failed - including for repeating instruments, whose instance number is on the run.
 
+## Retry all failed
+
+**Retry all failed (N)** re-runs every *import* whose latest run needs attention, not every flagged
+run. An import is a record's event, plus the repeat instance when the event or instrument repeats,
+plus the instrument when it repeats (`ImportStatus::importRunUnitKey()`). A failed run stays flagged
+in the list after a later run - a retry, a new survey submission - has imported the same data again,
+since a run's own entries never change; Retry all leaves those alone, and dismissed runs too
+(`ImportStatus::importRetryTargets()`).
+
+It covers the most recent 500 runs, not only those shown in the list (the button's tooltip says how
+many aren't shown), or just the filtered record's when the record filter is set. Runs on the page get
+their pill and result updated in place; the rest are tallied in the progress line. The button only
+appears when there is something to retry.
+
+## Records never imported
+
+Imports run when a survey is submitted, so records entered before the module was enabled (or before
+their fields were mapped) never get one. `ImportStatus::importNeverAttempted()` finds them. It looks
+at each place an import writes to: a record's event; each instance of a repeating event; and each
+instance of a mapped repeating instrument, which is a place of its own. It lists a place when:
+
+- **the record has data there.** The record has a row for that event or instance with a value in it,
+  so the event has happened. Events a record hasn't reached are left alone, as a survey trigger
+  would leave them.
+- **every field the current mappings import there is empty.** For a checkbox, no option is ticked.
+- **no logged run has requested any of those fields there.** This is read from every import run's
+  per-request `fields_requested`, however old. A run that made no requests, or that doesn't say which
+  fields it requested, counts as having tried everything in its event. One attempt is enough to leave
+  a place off the list: if that attempt left fields empty, the run list flags it.
+
+All of this comes from one `REDCap::getData()` call (the mapped fields, their lookup fields and the
+instruments' form status fields) and one query on the module log. The record filter narrows both to
+one record.
+
+Each place is also checked for the values its `[placeholders]` need, using the import's own rules
+(`Import::importLookupValue()`):
+
+| Status | Meaning |
+|---|---|
+| **Not imported** | Ready: every request has what it needs. |
+| **Partly ready** | Some requests can't look their values up yet. Importing fills the rest, and the run is flagged for the fields left empty. |
+| **Waiting on data** | No request can look its values up yet (no address entered, say). Not offered for import. |
+
+**Import** (per row) and **Import all (N)** send `import-unattempted`, which calls
+`ImportStatus::runFirstImport()`:
+
+- **Re-check first:** the place is looked up again for that one record. If it has been imported since
+  the page loaded (another tab, Import all, a survey), or its fields have values now, nothing runs
+  and the row says so. This also means only places the detection would list can be imported.
+- **The import:** `Import::importMappedData()` with the place's plan (`importUnitPlan()`: for a
+  repeating instrument, only that instrument's fields). It reads stored data as the project's cache
+  settings allow, as a survey submission's import would, rather than bypassing the cache.
+- **Audit trail:** logged like any run, as `API import: manual import by <username>`, so it joins the
+  run list. A failure there is flagged and can be retried or dismissed like any other.
+- **Who:** users with Project Design rights, re-checked server-side. Double clicks are refused by the
+  same 60-second lock as retries.
+- The table lists the first 200 places; Import all covers every importable one. Imports run one at a
+  time, so the page has to stay open until Import all finishes.
+
 ## Files
 
 - `classes/ImportStatus.php` - the trait: `importRuns()`, `importRecordStatus()`,
   `importRunNeedsAttention()`, `importRetryMappingCheck()`, `retryImportRun()`, `dismissImportRun()`,
-  `importOutcomeLabel()`
+  `importRetryTargets()`, `importNeverAttempted()`, `runFirstImport()`, `importOutcomeLabel()`
 - `classes/Import.php` - `importPlan()`, the mapping rules shared by imports and the retry check
 - `pages/Imports.php` - the page (linked from the project menu, see `config.json`)
-- `js/imports.js` - the retry and dismiss buttons' wiring (`module.ajax('retry-import', ...)`,
-  `module.ajax('dismiss-import', ...)`)
+- `js/imports.js` - the retry, dismiss and import buttons' wiring (`module.ajax('retry-import', ...)`,
+  `module.ajax('dismiss-import', ...)`, `module.ajax('import-unattempted', ...)`)
 - `css/imports.css` - page styles, building on `test_page.css`
-- `ADIF.php` - the `retry-import` and `dismiss-import` AJAX actions and the Imports page's JS bootstrap
+- `ADIF.php` - the `retry-import`, `dismiss-import` and `import-unattempted` AJAX actions and the Imports page's JS bootstrap

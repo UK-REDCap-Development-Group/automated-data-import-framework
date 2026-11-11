@@ -38,7 +38,7 @@ function adif_bytes($bytes)
 // This page's URL on a tab, for the tab links and as every form's action
 function adif_ds_url($module, $tab)
 {
-    return $module->getUrl('pages/Data_Sources.php') . '&tab=' . rawurlencode($tab);
+    return $module->getUrl('pages/DataSources.php') . '&tab=' . rawurlencode($tab);
 }
 
 // The hidden fields every form on the page posts: the CSRF token and which tab it belongs to

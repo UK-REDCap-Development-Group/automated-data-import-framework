@@ -6,5 +6,5 @@
 
 /** @var \UKModules\ADIF\ADIF $module */
 
-header('Location: ' . $module->getUrl('pages/Data_Sources.php') . '&tab=tables', true, 302);
+header('Location: ' . $module->getUrl('pages/DataSources.php') . '&tab=tables', true, 302);
 exit;

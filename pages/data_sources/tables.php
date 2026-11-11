@@ -1,6 +1,6 @@
 <?php
 /*
- * The Uploaded tables tab of the Data Sources page (pages/Data_Sources.php): upload a CSV or other
+ * The Uploaded tables tab of the Data Sources page (pages/DataSources.php): upload a CSV or other
  * delimited file to use as a data source. Each table's columns are offered on the Mapping page
  * alongside the API sources' fields, and imports read the row matching the record.
  * See classes/DataTables.php. Formerly the whole of the Data Tables page.
@@ -9,7 +9,7 @@
 /** @var \UKModules\ADIF\ADIF $module */
 
 if (!defined('ADIF_DATA_SOURCES_PAGE')) {
-    exit;   // only ever included by pages/Data_Sources.php, which checks the user's rights first
+    exit;   // only ever included by pages/DataSources.php, which checks the user's rights first
 }
 
 $error = null;

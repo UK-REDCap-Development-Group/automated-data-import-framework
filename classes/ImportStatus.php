@@ -30,6 +30,10 @@ trait ImportStatus
     // still going is rejected, so two clicks can't interleave two imports of the same data.
     private static $importRetryLockSeconds = 60;
 
+    // Columns of a getData() row that say where the row is rather than holding the record's data
+    private static $importRowLocationColumns = ['redcap_event_name', 'redcap_repeat_instrument', 'redcap_repeat_instance',
+        'redcap_data_access_group', 'redcap_survey_identifier'];
+
     // The project's import runs, newest first, each put together from the module log entries that
     // share a run_id (one per endpoint request, then a summary - see ImportLog::logImportRun):
     //   run_id, logged (unix time), user, record, event_id, event_name, instrument, repeat_instance,
@@ -286,6 +290,456 @@ trait ImportStatus
         return null;
     }
 
+    // The runs "Retry all failed" re-runs: for each import (see importRunUnitKey), its latest run in
+    // $runs (newest first, as importRuns() returns them), when that latest run needs attention. A
+    // failed run whose import has run again since - a retry, a new survey submission - is left out,
+    // as is a dismissed one, so each failing import is retried once, whether or not its run is among
+    // those shown on the page. Returns run_ids, newest first.
+    public function importRetryTargets($projectId, array $runs)
+    {
+        $project = new \Project($projectId);
+        $seen = [];
+        $targets = [];
+        foreach ($runs as $run) {
+            $key = $this->importRunUnitKey($project, $run);
+            if (isset($seen[$key])) {
+                continue;   // an older run of an import already seen
+            }
+            $seen[$key] = true;
+            if ($run['outcome'] === 'attention' && trim((string) $run['record']) !== '' && (string) $run['run_id'] !== '') {
+                $targets[] = $run['run_id'];
+            }
+        }
+
+        return $targets;
+    }
+
+    // Which import a run belongs to, so a later run can be recognised as importing the same data
+    // again: the record, the event, the repeat instance when the event or the instrument repeats
+    // (otherwise every run in the event imports the same fields), and the instrument when it repeats.
+    private function importRunUnitKey($project, array $run)
+    {
+        $eventId = is_numeric($run['event_id'] ?? null) ? (int) $run['event_id'] : 0;
+        $instrument = (string) ($run['instrument'] ?? '');
+        $repeatingForm = $instrument !== '' && $eventId > 0 && $project->isRepeatingForm($eventId, $instrument);
+        $repeats = $repeatingForm || ($eventId > 0 && $project->isRepeatingEvent($eventId));
+
+        return json_encode([(string) $run['record'], $eventId, $repeatingForm ? $instrument : '',
+            $repeats ? max(1, (int) ($run['repeat_instance'] ?? 1)) : 1]);
+    }
+
+    // The imports that have never been tried, so the Imports page can list them and run them. Imports
+    // run when a survey is submitted, so records entered before the module was enabled (or before
+    // their fields were mapped) never get one. One entry per place an import writes to - a record's
+    // event; in a repeating event, each of its instances; and for a mapped repeating instrument, each
+    // of its instances - where:
+    //   - the record has data there, so the event has happened (events it hasn't reached are left alone)
+    //   - every field the current mappings import there is empty
+    //   - no logged run has requested any of those fields there (see importAttemptedFields)
+    // Each entry: record, event_id, event_name (null in a classic project), instrument (the repeating
+    // instrument, or null for the event's other mapped fields), repeat_instance, repeats, fields (the
+    // mapped fields there), missing (why lookup values the import needs can't be read from the record
+    // yet, as the import would log it - field names, never values) and importable (whether at least
+    // one of its endpoint requests has everything it needs).
+    // $record checks one record only: the page's record filter, and runFirstImport()'s re-check.
+    public function importNeverAttempted($projectId, $record = null)
+    {
+        $project = new \Project($projectId);
+        $shapes = $this->importUnitShapes($projectId, $project);
+        if (empty($shapes)) {
+            return [];
+        }
+        $dictionary = REDCap::getDataDictionary($projectId, 'array');
+        $recordIdField = $project->table_pk;
+
+        // Everything the check reads, in one getData() call: the mapped fields, the fields their
+        // [placeholders] are looked up from, and the instruments' form status fields, which show which
+        // events and instances the record has data in
+        $fields = [$recordIdField];
+        foreach ($shapes as $shape) {
+            array_push($fields, ...$shape['fields'], ...$shape['status_fields']);
+            foreach ($shape['lookups'] as $lookups) {
+                array_push($fields, ...array_column($lookups, 'field'));
+            }
+        }
+        $statusFields = array_merge(...array_column($shapes, 'status_fields'));
+        $fields = array_values(array_unique(array_filter($fields,
+            fn($field) => isset($dictionary[$field]) || in_array($field, $statusFields, true))));
+
+        $request = ['project_id' => $projectId, 'return_format' => 'json', 'fields' => $fields];
+        if ($record !== null) {
+            $request['records'] = [(string) $record];
+        }
+        $data = json_decode(REDCap::getData($request), true);
+        if (!is_array($data)) {
+            throw new \Exception('ADIF couldn\'t read the project\'s records to look for imports that never ran.');
+        }
+
+        $rowsByRecord = [];
+        foreach ($data as $row) {
+            $name = (string) ($row[$recordIdField] ?? '');
+            if ($name !== '') {
+                $rowsByRecord[$name][] = $row;
+            }
+        }
+        if (empty($rowsByRecord)) {
+            return [];
+        }
+
+        $eventIds = $project->longitudinal ? array_flip($project->getUniqueEventNames()) : [];
+        $attempted = $this->importAttemptedFields($projectId, $project, $dictionary, $record);
+
+        $units = [];
+        foreach ($rowsByRecord as $name => $rows) {
+            $name = (string) $name;   // numeric record names come back as integer keys
+            foreach ($shapes as $shape) {
+                foreach ($rows as $row) {
+                    $rowEvent = $project->longitudinal
+                        ? ($eventIds[$row['redcap_event_name'] ?? ''] ?? null)
+                        : (int) $project->firstEventId;
+                    if ($rowEvent === null || (int) $rowEvent !== $shape['event_id']) {
+                        continue;
+                    }
+
+                    // The row this place's data is in: the event's own row, an instance of the repeating
+                    // event, or an instance of the repeating instrument
+                    $rowInstrument = (string) ($row['redcap_repeat_instrument'] ?? '');
+                    $rowInstance = (string) ($row['redcap_repeat_instance'] ?? '');
+                    if ($shape['instrument'] !== null) {
+                        if ($rowInstrument !== $shape['instrument'] || $rowInstance === '') {
+                            continue;
+                        }
+                    } elseif ($shape['repeats']) {
+                        if ($rowInstrument !== '' || $rowInstance === '') {
+                            continue;
+                        }
+                    } elseif ($rowInstance !== '') {
+                        continue;
+                    }
+                    $instance = $rowInstance === '' ? 1 : max(1, (int) $rowInstance);
+
+                    if (!self::importRowHasData($row, $recordIdField)
+                        || !self::importFieldsEmpty($row, $shape['fields'], $dictionary)
+                        || self::importUnitAttempted($attempted, $name, $shape, $instance)) {
+                        continue;
+                    }
+
+                    [$missing, $importable] = $this->importUnitLookupCheck($rows, $name, $shape, $instance, $dictionary);
+                    $units[] = [
+                        'record' => $name,
+                        'event_id' => $shape['event_id'],
+                        'event_name' => $this->importEventName($projectId, $shape['event_id']),
+                        'instrument' => $shape['instrument'],
+                        'repeat_instance' => $instance,
+                        'repeats' => $shape['repeats'],
+                        'fields' => $shape['fields'],
+                        'missing' => $missing,
+                        'importable' => $importable,
+                    ];
+                }
+            }
+        }
+
+        return $units;
+    }
+
+    // Where a project's imports write to, per event: the event's own mapped fields (instrument null;
+    // in a repeating event, per instance), and in an event that doesn't repeat, each mapped repeating
+    // instrument on its own. Each with the fields importUnitPlan() imports there, the [placeholder]
+    // lookups each of its requests needs, the lookup context for instance 1, and the form status
+    // fields of the instruments its data can be on.
+    private function importUnitShapes($projectId, $project)
+    {
+        $mappings = $this->getProjectSetting('field-mappings', $projectId) ?: [];
+        if (empty($mappings)) {
+            return [];
+        }
+
+        $shapes = [];
+        foreach ($project->eventsForms as $eventId => $forms) {
+            $eventId = (int) $eventId;
+            $forms = array_values((array) $forms);
+            $mappedForms = array_values(array_intersect(array_keys($mappings), $forms));
+            if (empty($mappedForms)) {
+                continue;
+            }
+            $eventRepeats = (bool) $project->isRepeatingEvent($eventId);
+
+            $instruments = [null];
+            if (!$eventRepeats) {
+                foreach ($mappedForms as $form) {
+                    if ($project->isRepeatingForm($eventId, $form)) {
+                        $instruments[] = $form;
+                    }
+                }
+            }
+
+            foreach ($instruments as $instrument) {
+                $plan = $this->importUnitPlan($projectId, $eventId, $instrument, 1);
+                $fields = [];
+                $lookups = [];
+                foreach ($plan['requests'] as $key => $request) {
+                    array_push($fields, ...array_column($request['fields'], 'field'));
+                    $lookups[$key] = [];
+                    if (preg_match_all('/\[([a-z][a-z0-9_]*)\]/', (string) $request['path'], $matches)) {
+                        foreach (array_unique($matches[1]) as $placeholder) {
+                            $lookups[$key][] = ['placeholder' => $placeholder,
+                                'field' => $this->getLookupField($request['source'], $placeholder)];
+                        }
+                    }
+                }
+                if (empty($fields)) {
+                    continue;
+                }
+
+                $shapes[] = [
+                    'event_id' => $eventId,
+                    'instrument' => $instrument,
+                    'repeats' => $instrument !== null || $eventRepeats,
+                    'fields' => array_values(array_unique($fields)),
+                    'lookups' => $lookups,
+                    'context' => $plan['lookup_context'],
+                    'status_fields' => array_map(fn($form) => $form . '_complete', $instrument !== null ? [$instrument] : $forms),
+                ];
+            }
+        }
+
+        return $shapes;
+    }
+
+    // importPlan() for one of importUnitShapes()' places. For a repeating instrument, only that
+    // instrument's fields: the event's other mapped fields are a place of their own, checked and
+    // imported separately, so an import of one instance doesn't overwrite them. The "repeating
+    // instrument other than the submitted one" lines are dropped for the same reason - those
+    // instruments are imported as places of their own, not skipped.
+    private function importUnitPlan($projectId, $eventId, $instrument, $instance)
+    {
+        $plan = $this->importPlan($projectId, $eventId, $instrument, $instance);
+        $plan['skipped'] = array_values(array_filter($plan['skipped'],
+            fn($line) => !str_ends_with($line, ': repeating instrument other than the submitted one')));
+        if ($instrument === null) {
+            return $plan;
+        }
+
+        $requests = [];
+        foreach ($plan['requests'] as $key => $request) {
+            $request['fields'] = array_values(array_filter($request['fields'],
+                fn($target) => $target['repeatInstrument'] === $instrument));
+            if (!empty($request['fields'])) {
+                $requests[$key] = $request;
+            }
+        }
+        $plan['requests'] = $requests;
+
+        return $plan;
+    }
+
+    // Whether a getData() row holds any of the record's data, as opposed to only saying where it is
+    private static function importRowHasData(array $row, $recordIdField)
+    {
+        foreach ($row as $column => $value) {
+            if ($column === $recordIdField || in_array($column, self::$importRowLocationColumns, true)) {
+                continue;
+            }
+            // A checkbox option's column reads "0" when it's unticked
+            if (str_contains((string) $column, '___') ? (string) $value === '1' : (string) $value !== '') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Whether every one of $fields is empty in a getData() row (a checkbox: none of its options ticked)
+    private static function importFieldsEmpty(array $row, array $fields, array $dictionary)
+    {
+        foreach ($fields as $field) {
+            if (($dictionary[$field]['field_type'] ?? '') === 'checkbox') {
+                foreach ($row as $column => $value) {
+                    if (str_starts_with((string) $column, $field . '___') && (string) $value === '1') {
+                        return false;
+                    }
+                }
+            } elseif ((string) ($row[$field] ?? '') !== '') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Whether the module log shows an import having tried any of a place's fields (see importAttemptedFields)
+    private static function importUnitAttempted(array $attempted, $record, array $shape, $instance)
+    {
+        $tried = $attempted[$record] ?? [];
+        if (isset($tried['any'][0]) || isset($tried['any'][$shape['event_id']])) {
+            return true;
+        }
+        $instanceKey = $shape['repeats'] ? (string) $instance : '*';
+        foreach ($shape['fields'] as $field) {
+            if (isset($tried['fields'][$shape['event_id']][$instanceKey][$field])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Whether a first import's [placeholder] values can be read from the record yet, by the same
+    // rules the import uses (Import::importLookupValue). Returns [missing, importable]: missing lists
+    // why values can't be read, in the import's own messages (field and instance names, never
+    // values), and importable is whether at least one request has every value it needs. A request
+    // without placeholders always does.
+    private function importUnitLookupCheck(array $rows, $record, array $shape, $instance, array $dictionary)
+    {
+        $context = ['instance' => max(1, (int) $instance)] + (array) $shape['context'];
+        $missing = [];
+        $importable = false;
+        foreach ($shape['lookups'] as $lookups) {
+            $ready = true;
+            foreach ($lookups as $lookup) {
+                $field = $lookup['field'];
+                if (!isset($dictionary[$field])) {
+                    $missing[] = "[{$lookup['placeholder']}] is looked up from the field \"$field\", which isn't in this project."
+                        . ' Choose its lookup field on the Mapping page.';
+                    $ready = false;
+                    continue;
+                }
+                try {
+                    $notices = [];
+                    $this->importLookupValue($rows, $field, (string) ($dictionary[$field]['form_name'] ?? ''), $context,
+                        $lookup['placeholder'], $record, $notices);
+                } catch (\Throwable $e) {
+                    $missing[] = $e->getMessage();
+                    $ready = false;
+                }
+            }
+            $importable = $importable || $ready;
+        }
+
+        return [array_values(array_unique($missing)), $importable];
+    }
+
+    // What the module log says imports have tried, by record, for importNeverAttempted():
+    //   fields - [event_id => [instance key => [field => true]]]: the fields each logged endpoint request
+    //            asked for. The instance key is the run's repeat instance when the field's event or
+    //            instrument repeats, else '*' (any run in the event tried the event's own fields).
+    //   any    - [event_id => true] for runs that don't say which fields they requested (the import
+    //            failed before making a request, or the run was logged without per-request entries),
+    //            which count as having tried everything in their event; event_id 0 for runs logged
+    //            without one, which count for every event
+    // Every import run is read, however old: one attempt is enough to leave a place off the list, and
+    // anything it left empty is the run list's to show.
+    private function importAttemptedFields($projectId, $project, array $dictionary, $record = null)
+    {
+        $sql = 'select distinct l.record, l.message, e.value as event_id, r.value as repeat_instance,'
+            . ' f.value as fields_requested, n.value as requests'
+            . ' from redcap_external_modules_log l'
+            . ' join redcap_external_modules m on m.external_module_id = l.external_module_id'
+            . ' and m.directory_prefix = ?'
+            . ' left join redcap_external_modules_log_parameters e on e.log_id = l.log_id and e.name = \'event_id\''
+            . ' left join redcap_external_modules_log_parameters r on r.log_id = l.log_id and r.name = \'repeat_instance\''
+            . ' left join redcap_external_modules_log_parameters f on f.log_id = l.log_id and f.name = \'fields_requested\''
+            . ' left join redcap_external_modules_log_parameters n on n.log_id = l.log_id and n.name = \'requests\''
+            . ' where l.project_id = ? and l.message like ?';
+        $parameters = [$this->getPrefix(), (int) $projectId, self::$importLogPrefix . '%'];
+        if ($record !== null) {
+            $sql .= ' and l.record = ?';
+            $parameters[] = (string) $record;
+        }
+
+        $attempted = [];
+        foreach ($this->importQueryRows($sql, $parameters) as $row) {
+            $rowRecord = (string) ($row['record'] ?? '');
+            if ($rowRecord === '') {
+                continue;
+            }
+            $eventId = is_numeric($row['event_id'] ?? null) ? (int) $row['event_id'] : 0;
+
+            if (($row['message'] ?? '') !== self::$importRequestLogMessage) {
+                // A run's summary entry: only tells us something when the run made no requests
+                if ((int) ($row['requests'] ?? 0) === 0) {
+                    $attempted[$rowRecord]['any'][$eventId] = true;
+                }
+                continue;
+            }
+
+            $requested = array_filter(array_map('trim', explode(',', (string) ($row['fields_requested'] ?? ''))), 'strlen');
+            if (empty($requested)) {
+                $attempted[$rowRecord]['any'][$eventId] = true;
+                continue;
+            }
+            $instance = (string) max(1, (int) ($row['repeat_instance'] ?? 1));
+            foreach ($requested as $field) {
+                $form = (string) ($dictionary[$field]['form_name'] ?? '');
+                $repeats = $eventId > 0 && ($project->isRepeatingEvent($eventId)
+                    || ($form !== '' && $project->isRepeatingForm($eventId, $form)));
+                $attempted[$rowRecord]['fields'][$eventId][$repeats ? $instance : '*'][$field] = true;
+            }
+        }
+
+        return $attempted;
+    }
+
+    // Runs the first import for one entry of importNeverAttempted(), as the logged-in user. The entry
+    // is looked up again first, so only an import that is still pending runs: one done since the page
+    // loaded (another tab, Import all, a survey submission), or whose fields have been filled since, is
+    // refused rather than imported twice. The import reads stored data the way the project's cache
+    // settings say, as a survey submission's would, and is logged like one - as "API import: manual
+    // import by <user>" - so it leaves the Never imported list and joins the run list, where a failure
+    // is flagged and can be retried like any other. Returns:
+    //   ['status' => 'success', 'run' => <the new run, as retryImportRun() returns one>]
+    //   ['status' => 'not_pending', 'message' => ...]  no longer waiting on a first import
+    //   ['status' => 'error', 'message' => ...]        e.g. none of its lookup values can be read yet
+    //   ['status' => 'locked', 'message' => ...]       the same import was started moments ago
+    public function runFirstImport($projectId, $record, $eventId, $instrument, $instance)
+    {
+        $unit = null;
+        foreach ($this->importNeverAttempted($projectId, $record) as $candidate) {
+            if ($candidate['record'] === (string) $record && $candidate['event_id'] === (int) $eventId
+                && $candidate['instrument'] === $instrument && $candidate['repeat_instance'] === (int) $instance) {
+                $unit = $candidate;
+                break;
+            }
+        }
+        if ($unit === null) {
+            return ['status' => 'not_pending', 'message' => 'Not imported: this is no longer waiting on a first import.'
+                . ' It has been imported since the page loaded, its mapped fields have values now, or its mappings'
+                . ' changed. Reload the page to see where it stands.'];
+        }
+        if (!$unit['importable']) {
+            return ['status' => 'error', 'message' => 'Not imported yet: ' . implode(' ', $unit['missing'])];
+        }
+
+        $user = $this->getUser();
+        $username = $user ? $user->getUsername() : '?';
+        $lock = 'import-first-' . md5(json_encode([(int) $projectId, $unit['record'], $unit['event_id'],
+                $unit['instrument'], $unit['repeat_instance']]));
+        if (!$this->importRetryAcquireLock($lock)) {
+            return ['status' => 'locked', 'message' => 'This import started less than ' . self::$importRetryLockSeconds
+                . ' seconds ago and may still be running. Wait a moment, then reload the page.'];
+        }
+
+        $description = "API import: manual import by $username";
+        try {
+            $start = microtime(true);
+            try {
+                $summary = $this->importMappedData($projectId, $unit['record'], $unit['event_id'], $unit['instrument'],
+                    $unit['repeat_instance'], null,
+                    $this->importUnitPlan($projectId, $unit['event_id'], $unit['instrument'], $unit['repeat_instance']));
+            } catch (\Throwable $e) {
+                $summary = ['errors' => [$e->getMessage()]];
+            }
+            $summary += ['saved' => [], 'skipped' => [], 'errors' => [], 'notices' => [], 'not_populated' => [], 'requests' => []];
+            $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
+            $summary['repeat_instance'] = $unit['repeat_instance'];
+
+            $this->logImportRun($description, $projectId, $unit['record'], $unit['event_id'], $unit['instrument'], $summary);
+        } finally {
+            $this->importRetryReleaseLock($lock);
+        }
+
+        return ['status' => 'success', 'run' => $this->importRunFromSummary($projectId, $description, $username,
+            $unit['record'], $unit['event_id'], $unit['instrument'], $unit['repeat_instance'], $summary)];
+    }
+
     // Marks the runs whose "Needs attention" was dismissed (and not since undone): outcome becomes
     // 'dismissed' and 'dismissed' holds who did it, when and why. Only flagged runs can be dismissed,
     // and a run's own entries never change, so a dismissed run would otherwise read 'attention'.
@@ -459,7 +913,16 @@ trait ImportStatus
             $this->importRetryReleaseLock($lock);
         }
 
-        // Show the result the way the run list shows any other run
+        return ['status' => 'success', 'run' => $this->importRunFromSummary($projectId, "API import: manual retry by $username",
+            $username, $run['record'], $run['event_id'], $run['instrument'], $run['repeat_instance'] ?? 1, $summary)];
+    }
+
+    // A run just made (a retry or a first import) in the shape importRuns() gives a logged one, built
+    // from its summary through the same outcome rules, so the page can show it the way the run list
+    // will once it's reloaded
+    private function importRunFromSummary($projectId, $description, $username, $record, $eventId, $instrument,
+                                          $repeatInstance, array $summary)
+    {
         $requestLogs = [];
         foreach ($summary['requests'] as $request) {
             $requestLogs[] = $this->importRetryRequestLog($request);
@@ -468,11 +931,11 @@ trait ImportStatus
             'run_id' => null,
             'logged' => time(),
             'user' => $username,
-            'record' => (string) $run['record'],
-            'event_id' => $run['event_id'],
-            'instrument' => $run['instrument'],
-            'repeat_instance' => $run['repeat_instance'] ?? 1,
-            'description' => "API import: manual retry by $username",
+            'record' => (string) $record,
+            'event_id' => $eventId,
+            'instrument' => $instrument,
+            'repeat_instance' => $repeatInstance,
+            'description' => $description,
             'summary' => null,
             'request_logs' => $requestLogs,
         ];
@@ -485,14 +948,14 @@ trait ImportStatus
             'errors' => implode("\n", $summary['errors']),
             'notices' => implode("\n", array_unique($summary['notices'])),
             'not_populated' => implode("\n", array_map(fn($f, $e) => "$f: $e", array_keys($summary['not_populated']), $summary['not_populated'])),
-            'event_name' => $this->importEventName($projectId, $run['event_id']),
+            'event_name' => $this->importEventName($projectId, $eventId),
         ];
         // The outcome rules read the logged (string) form of the summary, as the run list does - an
         // empty errors array would otherwise read as "has errors" and flag every retry
         $newRun['outcome'] = $this->importRunNeedsAttention(['errors' => $newRun['errors']], $requestLogs);
         $newRun['explanation'] = $this->importRunExplanation($newRun);
 
-        return ['status' => 'success', 'run' => $newRun];
+        return $newRun;
     }
 
     // Checks a logged run against the project's current mappings before it's retried, using the

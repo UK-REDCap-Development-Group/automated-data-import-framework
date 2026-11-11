@@ -21,11 +21,46 @@ $statusFilter = in_array((string) ($_GET['status'] ?? ''), ['attention', 'dismis
 $limitParam = (int) ($_GET['limit'] ?? 50);
 $limit = in_array($limitParam, [25, 50, 100, 200], true) ? $limitParam : 50;
 
-$allRuns = $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]);
+// Retry all failed covers every import among the most recent 500 runs, not only the runs listed
+// below; without a record filter, the list is the newest of those same runs
+$recentRuns = $module->importRuns($pid, ['limit' => 500]);
+$allRuns = $recordFilter === ''
+    ? array_slice($recentRuns, 0, $limit)
+    : $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]);
 $attentionCount = count(array_filter($allRuns, fn($run) => $run['outcome'] === 'attention'));
 
 // Retrying writes record data, so it's limited to the users who define what gets imported
 $canRetry = $module->canConfigureApiSources($pid);
+
+// What Retry all failed re-runs: each import whose latest run needs attention (see
+// ImportStatus::importRetryTargets), only the filtered record's when there is one
+$retryTargets = [];
+if ($canRetry) {
+    $recordOfRun = array_column($recentRuns, 'record', 'run_id');
+    $retryTargets = array_values(array_filter($module->importRetryTargets($pid, $recentRuns),
+        fn($runId) => $recordFilter === '' || (string) ($recordOfRun[$runId] ?? '') === $recordFilter));
+}
+$listedRunIds = array_flip(array_column($allRuns, 'run_id'));
+$hiddenTargets = count(array_filter($retryTargets, fn($runId) => !isset($listedRunIds[$runId])));
+
+// Records with data whose mapped fields are empty and have never had an import tried - usually
+// entered before the module was enabled (see ImportStatus::importNeverAttempted)
+$neverImported = [];
+$neverImportedError = null;
+try {
+    $neverImported = $module->importNeverAttempted($pid, $recordFilter !== '' ? $recordFilter : null);
+} catch (\Throwable $e) {
+    $neverImportedError = $e->getMessage();
+}
+// Each place gets a key the Import buttons and Import all share
+foreach ($neverImported as $index => &$unit) {
+    $unit['key'] = 'u' . $index;
+}
+unset($unit);
+$neverImportable = array_values(array_filter($neverImported, fn($unit) => $unit['importable']));
+$neverRecordCount = count(array_unique(array_column($neverImported, 'record')));
+// The table lists this many places; Import all still covers every one
+$neverShownCap = 200;
 
 $runs = $allRuns;
 if ($statusFilter !== '') {
@@ -107,6 +142,24 @@ function adif_imp_actions($run)
         . '</span></div>';
 }
 
+// The instrument and instance column of the Never imported table: a repeating instrument and its
+// instance, an instance of a repeating event, or a dash for an event's own fields
+function adif_imp_never_where($unit)
+{
+    if ($unit['instrument'] !== null) {
+        return adif_imp_h($unit['instrument']) . ' #' . (int) $unit['repeat_instance'];
+    }
+    return $unit['repeats'] ? 'Event instance #' . (int) $unit['repeat_instance'] : '&mdash;';
+}
+
+// "a, b, c, d, e, f (+3 more)", with the full list as the title
+function adif_imp_field_list($fields)
+{
+    $shown = array_slice($fields, 0, 6);
+    $text = implode(', ', $shown) . (count($fields) > count($shown) ? ' (+' . (count($fields) - count($shown)) . ' more)' : '');
+    return '<span title="' . adif_imp_h(implode(', ', $fields)) . '">' . adif_imp_h($text) . '</span>';
+}
+
 function adif_imp_instrument($run)
 {
     if ($run['instrument'] === null || $run['instrument'] === '') {
@@ -132,7 +185,7 @@ function adif_imp_instrument($run)
     <?php if ($attentionCount > 0 && $statusFilter !== 'attention'): ?>
         <div class="adif-alert adif-alert-error" role="alert">
             <strong><?= $attentionCount ?></strong> of the last <?= count($allRuns) ?> import run<?= count($allRuns) === 1 ? '' : 's' ?>
-            <?= $attentionCount === 1 ? 'has' : 'have' ?> left mapped fields empty<?= $canRetry
+            <?= $attentionCount === 1 ? 'has' : 'have' ?> left mapped fields empty<?= !empty($retryTargets)
                 ? ' - filter by <strong>Needs attention</strong> below to see just those, or use Retry all failed.'
                 : '. Filter by <strong>Needs attention</strong> below to see just those.' ?>
         </div>
@@ -219,18 +272,109 @@ function adif_imp_instrument($run)
         </section>
     <?php endif; ?>
 
-    <?php if ($canRetry && $attentionCount > 0): ?>
+    <?php if ($neverImportedError !== null): ?>
+        <div class="adif-alert adif-alert-error" role="alert">Couldn't check for records that have never been
+            imported: <?= adif_imp_h($neverImportedError) ?></div>
+    <?php elseif (!empty($neverImported)): ?>
+        <section class="adif-dt-card adif-imp-never" id="adif-imp-never">
+            <h4>Never imported: <?= count($neverImported) ?> place<?= count($neverImported) === 1 ? '' : 's' ?>
+                in <?= $neverRecordCount ?> record<?= $neverRecordCount === 1 ? '' : 's' ?><?= $recordFilter !== ''
+                    ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></h4>
+            <p class="adif-imp-explain">These records have data in an event (or instance) where every mapped field is
+                still empty and no import has ever been tried &mdash; usually records entered before ADIF was enabled,
+                or before these fields were mapped. Imports run when a survey is submitted, so these won't fill on their
+                own. An import started here works like a survey's: it calls the APIs (or uses stored data, as each
+                source's cache settings allow), fills the empty fields, and is logged and listed below like any other run.</p>
+
+            <?php if ($canRetry && !empty($neverImportable)): ?>
+                <div class="adif-imp-toolbar">
+                    <button type="button" id="adif-imp-import-all" class="btn btn-primaryrc btn-sm"
+                            title="Runs the first import for every place listed that has the values its lookups need, one after another">
+                        Import all (<?= count($neverImportable) ?>)
+                    </button>
+                    <span id="adif-imp-import-progress" class="adif-imp-progress" aria-live="polite"></span>
+                </div>
+                <script type="application/json" id="adif-imp-never-units"><?= json_encode(array_map(fn($unit) => [
+                    'key' => $unit['key'],
+                    'record' => $unit['record'],
+                    'event_id' => $unit['event_id'],
+                    'instrument' => $unit['instrument'] ?? '',
+                    'instance' => $unit['repeat_instance'],
+                ], $neverImportable), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
+            <?php elseif (!$canRetry): ?>
+                <p class="adif-imp-note">Users with Project Design rights can run these imports from this page.</p>
+            <?php endif; ?>
+            <?php if (count($neverImportable) < count($neverImported)): ?>
+                <p class="adif-imp-note"><?= count($neverImported) - count($neverImportable) ?> can't be imported yet: a
+                    value the API lookup needs (an address, say) isn't in the record. They're left out of Import all;
+                    see each one's status.</p>
+            <?php endif; ?>
+
+            <div class="adif-imp-scroll">
+                <table class="adif-headers-table adif-imp-never-table">
+                    <thead>
+                        <tr>
+                            <th>Record</th>
+                            <th>Event</th>
+                            <th>Instrument</th>
+                            <th>Mapped fields (all empty)</th>
+                            <th>Status</th>
+                            <?php if ($canRetry): ?><th></th><?php endif; ?>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach (array_slice($neverImported, 0, $neverShownCap) as $unit): ?>
+                            <tr data-unit-key="<?= adif_imp_h($unit['key']) ?>" class="<?= $unit['importable'] ? '' : 'is-waiting' ?>">
+                                <td><?= adif_imp_record_link($unit['record'], $pid) ?></td>
+                                <td><?= $unit['event_name'] !== null ? adif_imp_h($unit['event_name']) : 'Single event' ?></td>
+                                <td><?= adif_imp_never_where($unit) ?></td>
+                                <td><?= adif_imp_field_list($unit['fields']) ?></td>
+                                <td class="adif-imp-never-status">
+                                    <?php if (!$unit['importable']): ?>
+                                        <span class="adif-status-pill adif-status-none">Waiting on data</span>
+                                        <div class="adif-imp-explain"><?= nl2br(adif_imp_h(implode("\n", $unit['missing']))) ?></div>
+                                    <?php elseif (!empty($unit['missing'])): ?>
+                                        <span class="adif-status-pill adif-status-stale">Partly ready</span>
+                                        <div class="adif-imp-explain">Some fields will stay empty for now:
+                                            <?= nl2br(adif_imp_h(implode("\n", $unit['missing']))) ?></div>
+                                    <?php else: ?>
+                                        <span class="adif-status-pill adif-status-none">Not imported</span>
+                                    <?php endif; ?>
+                                </td>
+                                <?php if ($canRetry): ?>
+                                    <td class="adif-imp-never-action">
+                                        <?php if ($unit['importable']): ?>
+                                            <button type="button" class="btn btn-defaultrc btn-sm adif-imp-import-one"
+                                                    data-unit-key="<?= adif_imp_h($unit['key']) ?>"
+                                                    title="Runs the first import for record <?= adif_imp_h($unit['record']) ?> here">Import</button>
+                                        <?php endif; ?>
+                                    </td>
+                                <?php endif; ?>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if (count($neverImported) > $neverShownCap): ?>
+                <p class="adif-imp-note">Showing the first <?= $neverShownCap ?> of <?= count($neverImported) ?>.<?= $canRetry
+                    ? ' Import all covers every one that can be imported, listed or not.' : '' ?></p>
+            <?php endif; ?>
+        </section>
+    <?php endif; ?>
+
+    <?php if (!empty($retryTargets)): ?>
         <div class="adif-imp-toolbar">
             <label class="adif-imp-bypass" for="adif-imp-bypass" title="On (recommended): a retry calls the APIs even for requests the cache could answer, so data stored during an outage isn't reused. Off: stored responses are reused where they exist.">
                 <input type="checkbox" id="adif-imp-bypass" checked>
                 Skip stored data and call the APIs
             </label>
             <button type="button" id="adif-imp-retry-all" class="btn btn-primaryrc btn-sm"
-                    title="Re-runs every run flagged Needs attention in this list, one after another">
-                Retry all failed
+                    title="Re-runs every import whose latest run needs attention, one after another: <?= count($retryTargets) ?> among the last 500 runs<?= $hiddenTargets > 0 ? ", $hiddenTargets of them not shown in this list" : '' ?>. A failed run whose import has run again since, or that was dismissed, is left alone.">
+                Retry all failed (<?= count($retryTargets) ?>)
             </button>
             <span id="adif-imp-retry-progress" class="adif-imp-progress" aria-live="polite"></span>
         </div>
+        <script type="application/json" id="adif-imp-retry-targets"><?= json_encode($retryTargets, JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
     <?php endif; ?>
 
     <h4><?= count($runs) ?> run<?= count($runs) === 1 ? '' : 's' ?><?= $statusFilter !== ''

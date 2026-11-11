@@ -4,7 +4,7 @@ namespace UKModules\ADIF;
 
 // Mixed into UKModules\ADIF\ADIF alongside Proxy. Reads and writes the API sources configured in the
 // repeatable "api-sources" project setting (see config.json), for the API connections tab of the Data
-// Sources page (pages/Data_Sources.php) - a friendlier front end to the same settings REDCap's module
+// Sources page (pages/DataSources.php) - a friendlier front end to the same settings REDCap's module
 // configuration dialog edits. Nothing new is stored: every value goes into the same sub-setting the
 // dialog would write, so either can be used and each sees the other's changes.
 //

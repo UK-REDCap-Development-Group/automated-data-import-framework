@@ -51,7 +51,8 @@
     "auth-ajax-actions": [
         "detect-schema",
         "retry-import",
-        "dismiss-import"
+        "dismiss-import",
+        "import-unattempted"
     ],
     "links": {
         "project": [
@@ -63,19 +64,19 @@
                 "show-user-setting": "show-api-test-page"
             },
             {
+                "name": "ADIF Data Sources",
+                "icon": "fa-plug",
+                "url": "pages/DataSources.php",
+                "show-header": true
+            },
+            {
                 "name": "ADIF Mapping",
                 "icon": "fa-right-left",
                 "url": "pages/Mapping.php",
                 "show-header": true
             },
             {
-                "name": "ADIF Data Sources",
-                "icon": "fa-plug",
-                "url": "pages/Data_Sources.php",
-                "show-header": true
-            },
-            {
-                "name": "ADIF Imports",
+                "name": "ADIF Import Status",
                 "icon": "fa-clipboard-list",
                 "url": "pages/Imports.php",
                 "show-header": true

@@ -1,6 +1,6 @@
 <?php
 /*
- * The API connections tab of the Data Sources page (pages/Data_Sources.php): add, edit, test, reorder
+ * The API connections tab of the Data Sources page (pages/DataSources.php): add, edit, test, reorder
  * and delete the project's API sources. Every value is saved to the same "api-sources" sub-settings
  * REDCap's module configuration dialog edits (see classes/ApiSources.php), so the two stay in step.
  * The API key is never sent to the browser: a saved key can be kept, replaced or removed.
@@ -9,7 +9,7 @@
 /** @var \UKModules\ADIF\ADIF $module */
 
 if (!defined('ADIF_DATA_SOURCES_PAGE')) {
-    exit;   // only ever included by pages/Data_Sources.php, which checks the user's rights first
+    exit;   // only ever included by pages/DataSources.php, which checks the user's rights first
 }
 
 $error = null;

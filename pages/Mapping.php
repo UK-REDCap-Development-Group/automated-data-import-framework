@@ -258,8 +258,13 @@ $projectTitle = \REDCap::getProjectTitle();
             .map(entry => entry.f);
     }
 
-    // Puts a field (or nothing) into a row's hidden select, the way a choice in the old dropdown did
-    function setPickerValue(select, obj) {
+    // Puts a field (or nothing) into a row's hidden select, the way a choice in the old dropdown did.
+    // unavailable is a saved mapping ({ mapping, endpoint }) whose API field no source offers right
+    // now - a schema changed, a source's URL changed, a table was deleted. It's kept as the row's
+    // value, marked, so saving the page doesn't quietly turn it into "None": checkpoint() saves every
+    // row from its select. It comes back on its own if the field is offered again, and the user can
+    // still choose another field or "No mapping".
+    function setPickerValue(select, obj, unavailable = null) {
         select.textContent = '';
         const none = document.createElement('option');
         none.value = '';
@@ -270,9 +275,23 @@ $projectTitle = \REDCap::getProjectTitle();
             const option = apiFieldOption(obj);
             option.selected = true;
             select.appendChild(option);
+        } else if (unavailable && unavailable.mapping) {
+            const option = document.createElement('option');
+            option.value = unavailable.mapping;
+            option.textContent = apiFieldDisplay(unavailable.mapping);
+            if (unavailable.endpoint) option.setAttribute('data-endpoint', unavailable.endpoint);
+            option.setAttribute('data-unavailable', '1');
+            option.selected = true;
+            select.appendChild(option);
         } else {
             none.selected = true;
         }
+    }
+
+    // Whether a row's value is a saved mapping no source offers right now (see setPickerValue)
+    function isUnavailableMapping(select) {
+        const option = select.options[select.selectedIndex];
+        return !!(option && option.dataset.unavailable);
     }
 
     function selectedPickerKey(select) {
@@ -323,8 +342,30 @@ $projectTitle = \REDCap::getProjectTitle();
     // The button that stands in for a row's dropdown: where the value comes from, and which field
     function renderPickerTrigger(trigger, select) {
         trigger.textContent = '';
+        trigger.classList.remove('is-unavailable');
         const key = selectedPickerKey(select);
         const field = key ? pickerFields.find(f => f.key === key) : null;
+
+        if (!field && isUnavailableMapping(select)) {
+            const option = select.options[select.selectedIndex];
+            const endpoint = option.dataset.endpoint || '';
+            trigger.classList.remove('is-empty');
+            trigger.classList.add('is-unavailable');
+            const badge = document.createElement('span');
+            badge.className = 'adif-picker-badge adif-picker-badge-unavailable';
+            badge.textContent = 'Not offered';
+            trigger.appendChild(badge);
+            const value = document.createElement('span');
+            value.className = 'adif-picker-value';
+            value.textContent = option.textContent;
+            trigger.appendChild(value);
+            trigger.insertAdjacentHTML('beforeend', PICKER_ICONS.chevron);
+            trigger.title = `Mapped to ${endpoint ? endpoint + ': ' : ''}${option.value}, which no configured data source `
+                + 'offers right now, so imports skip this field. The mapping is kept: it works again once a source '
+                + 'offers the field, or choose another field here.';
+            trigger.setAttribute('aria-label', `API field for ${select.name}: ${option.value}, not offered by any data source`);
+            return;
+        }
 
         if (!field) {
             trigger.classList.add('is-empty');
@@ -357,7 +398,7 @@ $projectTitle = \REDCap::getProjectTitle();
             ? apiFields.filter(obj => obj.field === savedMapping.mapping
                 && (!savedMapping.endpoint || savedMapping.endpoint === obj.endpoint)).pop()
             : null;
-        setPickerValue(select, saved || null);
+        setPickerValue(select, saved || null, saved ? null : savedMapping);
         select.hidden = true;
         select.dataset.form = formKey;
 
@@ -1151,6 +1192,36 @@ $projectTitle = \REDCap::getProjectTitle();
         container.innerHTML = '';
         container.appendChild(fragment);
         refreshAllLookupStatuses();
+        refreshUnavailableNote();
+    }
+
+    // Above the tables: how many mappings point at API fields no source offers right now (see
+    // setPickerValue), since imports skip those fields until they're offered again or remapped
+    function refreshUnavailableNote() {
+        const container = document.getElementById('instruments_list');
+        if (!container) return;
+        let note = document.getElementById('adif-unavailable-note');
+        const selects = Array.from(container.querySelectorAll('select[name]')).filter(isUnavailableMapping);
+        if (!selects.length) {
+            if (note) note.remove();
+            return;
+        }
+        if (!note) {
+            note = document.createElement('div');
+            note.id = 'adif-unavailable-note';
+            note.className = 'adif-unavailable-note';
+            note.setAttribute('role', 'status');
+            container.before(note);
+        }
+        const names = selects.map(select => select.name);
+        note.textContent = `${names.length} mapped field${names.length === 1 ? '' : 's'} `
+            + `${names.length === 1 ? 'points' : 'point'} at an API field that no configured data source offers right now, `
+            + `so imports skip ${names.length === 1 ? 'it' : 'them'}: ${names.join(', ')}. `
+            + (names.length === 1
+                ? 'The mapping is kept, and works again once a source offers that field (check the Data Sources page), '
+                    + 'or choose another field for it.'
+                : 'The mappings are kept, and work again once a source offers those fields (check the Data Sources '
+                    + 'page), or choose other fields for them.');
     }
 
     // TODO: somehow we want to log changes made, but it runs on every individual change currently. Refactor so that we
@@ -1255,6 +1326,37 @@ $projectTitle = \REDCap::getProjectTitle();
                 }
             }
         });
+    }
+
+    // An uploaded mapping file (an export from this page) checked against this project: the forms and
+    // fields it has, in REDCap's order, and the ones it doesn't ("form" or "form.field"), which can't
+    // be shown or saved here. API fields aren't checked: one no source here offers is kept and marked
+    // (see setPickerValue). Returns null when the file isn't a mapping export at all.
+    function uploadedMappings(data) {
+        const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+        if (!isObject(data) || Object.values(data).some(fields => !isObject(fields))) return null;
+
+        const kept = {};
+        const dropped = [];
+        Object.entries(data).forEach(([form, fields]) => {
+            if (!instruments[form] || !dictionary[form]) {
+                dropped.push(form);
+                return;
+            }
+            kept[form] = {};
+            Object.entries(fields).forEach(([field, config]) => {
+                if (!dictionary[form][field]) {
+                    dropped.push(`${form}.${field}`);
+                    return;
+                }
+                const mapping = isObject(config) && typeof config.mapping === 'string' ? config.mapping : '';
+                const endpoint = isObject(config) && typeof config.endpoint === 'string' && config.endpoint !== ''
+                    ? config.endpoint : null;
+                kept[form][field] = {mapping, endpoint};
+            });
+        });
+
+        return {mappings: sortMappings(kept, instruments), dropped};
     }
 
     // Sorts a mapping prior to save so that it is displayed in the same order as they appear in REDCap.
@@ -1552,15 +1654,38 @@ $projectTitle = \REDCap::getProjectTitle();
 
                 const file = fileInput.files[0];
 
+                let data;
                 try {
-                    const text = await file.text();
-                    const data = JSON.parse(text);
-                    rebuild_from_mappings(instruments, dictionary, data);
-                    checkpoint(); // save it after
-                    closeModal();
+                    data = JSON.parse(await file.text());
                 } catch (err) {
                     console.error(err);
                     alert("Invalid JSON file.");
+                    return;
+                }
+
+                const uploaded = uploadedMappings(data);
+                if (uploaded === null) {
+                    alert('This file isn\'t an ADIF mapping export: it should list forms, each with its fields\' mappings.');
+                    return;
+                }
+                if (!Object.keys(uploaded.mappings).length) {
+                    alert('None of the forms in this file exist in this project, so nothing was changed.'
+                        + (uploaded.dropped.length ? `\n\nNot found here: ${uploaded.dropped.join(', ')}` : ''));
+                    return;
+                }
+
+                // The file replaces the saved mappings: show exactly its forms, then save what's shown.
+                // (Rebuilding with the forms that happened to be shown before dropped every other form
+                // in the file, and saved nothing at all in a project with no forms shown yet.)
+                mappings = uploaded.mappings;
+                displayed = Object.keys(mappings);
+                rebuild_from_mappings(instruments, dictionary, mappings);
+                checkpoint();
+                closeModal();
+
+                if (uploaded.dropped.length) {
+                    alert(`Uploaded mappings for ${displayed.length} form${displayed.length === 1 ? '' : 's'}. These weren't `
+                        + `found in this project, so their mappings were left out:\n\n${uploaded.dropped.join(', ')}`);
                 }
             });
 
@@ -1601,6 +1726,7 @@ $projectTitle = \REDCap::getProjectTitle();
             if (event.target.matches('#instruments_list select[name]')) {
                 checkpoint();
                 refreshLookupStatus(event.target);
+                refreshUnavailableNote();
                 if (missingLookups(selectedLookups(event.target)).length) {
                     openLookupPrompt(event.target);
                 } else if (event.target.closest('tr').nextElementSibling?.classList.contains('lookup-prompt-row')) {

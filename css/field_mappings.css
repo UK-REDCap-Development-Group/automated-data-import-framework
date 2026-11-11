@@ -300,6 +300,34 @@
     text-overflow: ellipsis;
 }
 
+/* A saved mapping whose API field no data source offers right now: kept, but flagged, since
+   imports skip it (see setPickerValue in pages/Mapping.php) */
+.adif-picker-trigger.is-unavailable {
+    border-color: #E0B252;
+    background: #FFFBF0;
+}
+
+.adif-picker-trigger.is-unavailable .adif-picker-value {
+    color: #6B5300;
+    text-decoration: line-through;
+    text-decoration-color: rgba(107, 83, 0, 0.45);
+}
+
+.adif-picker-badge-unavailable {
+    flex: none;
+    background: #FFF0C2;
+    color: #6B5300;
+}
+
+.adif-unavailable-note {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border: 1px solid #FFE082;
+    border-radius: 4px;
+    background: #FFF8E1;
+    color: #6B5300;
+}
+
 .adif-picker {
     position: absolute;
     z-index: 1040;

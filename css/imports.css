@@ -244,3 +244,45 @@
 .adif-imp-explain {
     overflow-wrap: anywhere;
 }
+
+/* The Never imported card: places with data and empty mapped fields that no import has tried */
+.adif-imp-never {
+    border: 1px solid #dde2e6;
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 12px 0;
+    background: #fff;
+}
+
+.adif-imp-never h4 {
+    margin: 0 0 4px;
+}
+
+.adif-imp-never .adif-imp-scroll,
+.adif-imp-never .adif-imp-note {
+    margin-left: 0;
+    margin-right: 0;
+}
+
+.adif-imp-never-table td {
+    vertical-align: top;
+}
+
+/* Can't be imported until the record has the value its lookup needs */
+.adif-imp-never-table tr.is-waiting td {
+    color: #667;
+}
+
+.adif-imp-never-table tr.is-done td {
+    background: #f1fbf3;
+}
+
+.adif-imp-never-table tr.is-attention td {
+    background: #fdf6f5;
+}
+
+.adif-imp-never-message {
+    margin: 6px 0 0;
+    padding: 4px 8px;
+    font-size: 0.85em;
+}

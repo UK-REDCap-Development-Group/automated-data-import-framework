@@ -1,4 +1,4 @@
-/* The Data Sources page (pages/Data_Sources.php): its tabs, and the API connections tab
+/* The Data Sources page (pages/DataSources.php): its tabs, and the API connections tab
    (pages/data_sources/apis.php). Builds on test_page.css and data_tables.css. */
 
 /* Tabs: links, so each tab has its own URL and a save lands back on it */
