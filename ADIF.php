@@ -14,6 +14,7 @@ require_once __DIR__ . '/classes/ApiCache.php';
 require_once __DIR__ . '/classes/ImportLog.php';
 require_once __DIR__ . '/classes/ImportStatus.php';
 require_once __DIR__ . '/classes/ImportQueue.php';
+require_once __DIR__ . '/classes/ProjectCleanup.php';
 require_once __DIR__ . '/classes/ApiSources.php';
 
 class ADIF extends AbstractExternalModule
@@ -26,6 +27,7 @@ class ADIF extends AbstractExternalModule
     use ImportLog;
     use ImportStatus;
     use ImportQueue;
+    use ProjectCleanup;
     use ApiSources;
 
     // provided courtesy of Scott J. Pearson

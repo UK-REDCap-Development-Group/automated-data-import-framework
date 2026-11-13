@@ -54,6 +54,14 @@ until the page gets a proper field for it.
 Sends one request to the saved URL plus a path, with the saved key, and shows the status, timing,
 size and the start of the response. `[placeholders]` must be replaced with a real value first.
 
+## When a project is deleted
+
+A project's uploaded tables are files in REDCap's file storage, under the project. When the project
+is permanently deleted, the hourly `adif_deleted_project_cleanup` cron marks them deleted, so
+REDCap's cron removes them. It also removes ADIF's settings for the project, API keys included.
+While the project is only marked deleted, the tables are kept, so restoring it restores them. See
+"When a project is deleted" in `docs/caching.md` and `classes/ProjectCleanup.php`.
+
 ## Files
 
 - `classes/ApiSources.php` - the trait: `getApiSourceConfigs()`, `saveApiSource()`,

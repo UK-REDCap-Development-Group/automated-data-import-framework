@@ -83,4 +83,33 @@ final class TableStorage implements StorageBackend
         ($this->query)($sql, $params);
         return -1; // TODO: affected-row count from the EM query wrapper
     }
+
+    public function purgeProjectData(int $projectId): int
+    {
+        // "record:5:%" can't match project 50's "record:50:..." - the colon ends the id
+        $where  = 'ns = ? OR ns LIKE ?';
+        $params = ["project:$projectId", "record:$projectId:%"];
+        $row = ($this->query)("SELECT COUNT(*) AS n FROM {$this->table} WHERE $where", $params)->fetch_assoc();
+        $count = (int) ($row['n'] ?? 0);
+        if ($count > 0) {
+            ($this->query)("DELETE FROM {$this->table} WHERE $where", $params);
+        }
+        return $count;
+    }
+
+    public function projectIds(): array
+    {
+        $res = ($this->query)(
+            "SELECT DISTINCT SUBSTRING_INDEX(SUBSTRING_INDEX(ns, ':', 2), ':', -1) AS pid FROM {$this->table}"
+            . " WHERE ns LIKE 'project:%' OR ns LIKE 'record:%'",
+            []
+        );
+        $ids = [];
+        while ($row = $res->fetch_assoc()) {
+            if (ctype_digit((string) $row['pid'])) {
+                $ids[] = (int) $row['pid'];
+            }
+        }
+        return $ids;
+    }
 }

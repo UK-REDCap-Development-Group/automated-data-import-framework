@@ -59,6 +59,9 @@ trait DataTables
     private function saveDataTables($tables)
     {
         $this->setProjectSetting('data-tables', $tables);
+        // Kept outside the project's settings too, so the files can still be found and removed once
+        // the project is permanently deleted (see ProjectCleanup)
+        $this->registerDataTableEdocs($this->getProjectId(), $tables);
     }
 
     public function isDataTableSource($source)

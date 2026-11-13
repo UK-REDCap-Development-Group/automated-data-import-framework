@@ -36,6 +36,29 @@ final class InMemoryStorage implements StorageBackend
         return $before - count($this->data[$namespace]);
     }
 
+    public function purgeProjectData(int $projectId): int
+    {
+        $removed = 0;
+        foreach (array_keys($this->data) as $namespace) {
+            if ($namespace === "project:$projectId" || str_starts_with($namespace, "record:$projectId:")) {
+                $removed += count($this->data[$namespace]);
+                unset($this->data[$namespace]);
+            }
+        }
+        return $removed;
+    }
+
+    public function projectIds(): array
+    {
+        $ids = [];
+        foreach (array_keys($this->data) as $namespace) {
+            if (preg_match('/^(?:project|record):(\d+)(?::|$)/', $namespace, $m)) {
+                $ids[(int) $m[1]] = true;
+            }
+        }
+        return array_keys($ids);
+    }
+
     /** Test helper. */
     public function dump(): array
     {

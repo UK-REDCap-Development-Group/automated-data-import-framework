@@ -142,9 +142,20 @@ trait ImportQueue
         $totals = ['ran' => 0, 'attention' => 0, 'abandoned' => 0, 'remaining' => 0];
 
         try {
-            foreach ($this->getProjectsWithModuleEnabled() as $projectId) {
+            $projectIds = $this->getProjectsWithModuleEnabled();
+            // A deleted project's imports wait: it may be restored, and if it's deleted for good its
+            // queue goes with its module log (see ProjectCleanup)
+            try {
+                $status = $this->projectDeletionStatus($projectIds);
+            } catch (\Throwable $e) {
+                $status = [];
+            }
+            foreach ($projectIds as $projectId) {
                 if (time() >= $deadline) {
                     break;
+                }
+                if (($status[(int) $projectId] ?? 'active') !== 'active') {
+                    continue;
                 }
                 $_GET['pid'] = $projectId;
                 try {

@@ -125,6 +125,30 @@ ADIF doesn't block outbound requests: a source that isn't cached simply calls it
   where before the fields were left blank.
 - Import log entries gain a `notices` parameter.
 
+## When a project is deleted
+
+REDCap has no hook for project deletion, so an hourly cron, `adif_deleted_project_cleanup`
+(`ProjectCleanup::cleanUpDeletedProjects()`), finds projects that ADIF holds data for and that have
+been deleted:
+
+- **Deleted** (an administrator can still restore it): its cached API responses go - every
+  `project:<pid>` and `record:<pid>:*` entry (`StorageBackend::purgeProjectData()`). They can hold
+  identifying values, and a restored project simply fetches again. Its queued imports wait; the
+  queue cron skips deleted projects.
+- **Permanently deleted** (its row is gone from `redcap_projects`): its uploaded tables' files are
+  marked deleted in `redcap_edocs_metadata`, as removing a table does, so REDCap's own cron removes
+  them. ADIF's module settings for it (mappings, sources, API keys, the table list) and its module log
+  entries (runs, queue) are removed too. Tables are kept until this point, so restoring a deleted
+  project restores them.
+
+REDCap may already have removed some of this with the project; each step is a no-op when it has.
+Entries shared across projects (`system` scope: public, keyless sources only) belong to no project
+and stay. A permanently deleted project's settings may already be gone when the cron runs, so the
+files behind each project's tables are also kept in the `adif-table-edocs` system setting. It's
+updated whenever a project's tables change, and refreshed from the projects' settings on every run.
+A file is only marked deleted while REDCap still records it under that project. Each cleanup writes
+one system-level module log entry, `ADIF data removed for a deleted project`, with what was removed.
+
 ## Not done yet / next steps
 
 - **Verify against a live REDCap instance.** The tests run against stubs; check the
@@ -133,8 +157,9 @@ ADIF doesn't block outbound requests: a source that isn't cached simply calls it
 - **"Refresh now" button** on the record or Mapping page, calling
   `fetchApiJson(..., FetchMode::Live)`.
 - **Cache admin page**: size, age, purge per source/project.
-- **Record and project deletion**: `purgeRecord()` / `purgeProject()` exist but no hook calls them yet.
-  Project-scoped entries aren't attributable to a single record.
+- **Record deletion**: `purgeRecord()` exists but no hook calls it yet. Project-scoped entries
+  aren't attributable to a single record. (A deleted project's entries are removed: see "When a
+  project is deleted" above.)
 - **Provenance in the record**: optionally write source, version and retrieval date
   (`provenance` from `fetchApiJson`) to hidden fields.
 - **Bulk preload** for public sources (`CacheManager::preload()` + `BulkLoadable`), so a project
