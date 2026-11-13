@@ -1,9 +1,9 @@
 // The Imports page's buttons (pages/Imports.php). Sends 'retry-import' (see ADIF's
-// redcap_module_ajax and ImportStatus::retryImportRun) for one run, or sequentially for every import
-// whose latest run needs attention, and rewrites each run's pill and detail area with the result.
-// Also runs the first import for records listed under "Never imported" ('import-unattempted', see
-// ImportStatus::runFirstImport), one at a time or all in a row, and the background import queue
-// on demand ('run-import-queue', see ImportQueue).
+// redcap_module_ajax and ImportStatus::retryImportRun) for one run, and rewrites its pill and detail
+// area with the result. (Retry all failed is queued for a cron instead - see classes/ImportRetryAll.php.)
+// Also runs the first import for one record listed under "Never imported" ('import-unattempted', see
+// ImportStatus::runFirstImport; Import all is queued for a cron instead - see classes/ImportAll.php),
+// and the background import queue on demand ('run-import-queue', see ImportQueue).
 // window.ADIFImports ({ prefix, module }) is set by ADIF::redcap_every_page_top.
 (function () {
     const settings = window.ADIFImports;
@@ -222,8 +222,7 @@
             });
     });
 
-    // The run_ids Retry all failed covers, from pages/Imports.php: each import whose latest run needs
-    // attention (see ImportStatus::importRetryTargets), including runs not shown in the list
+    // JSON the page embeds for the buttons below (the Never imported places, see pages/Imports.php)
     function readJson(id) {
         try {
             return JSON.parse($('#' + id).text() || '[]');
@@ -232,85 +231,16 @@
         }
     }
 
-    // A retry of a run that isn't on the page: same action, nothing to update but the tally
-    function retryUnlisted(runId) {
-        return settings.module.ajax('retry-import', { run_id: runId, bypass_cache: bypassCache() })
-            .then(function (response) {
-                return response || { status: 'error', message: 'No response from the server.' };
-            })
-            .catch(function (error) {
-                return { status: 'error', message: (error && error.message) || String(error) };
-            });
-    }
+    // Retry all failed isn't wired here: it's a plain form that queues the retries for the cron (see
+    // classes/ImportRetryAll.php), so a long list can't hold the browser up. Its "Skip stored data"
+    // checkbox (#adif-imp-bypass) is still the one the per-run Retry buttons read.
 
-    const retriedRuns = {};
-
-    $(document).on('click', '#adif-imp-retry-all', function () {
-        const $button = $(this);
-        const runIds = readJson('adif-imp-retry-targets').filter(function (runId) { return !retriedRuns[runId]; });
-        if (!runIds.length) {
-            $('#adif-imp-retry-progress').text('Nothing left to retry. Reload the page to check again.');
-            return;
-        }
-        const unlisted = runIds.filter(function (runId) { return !$('details[data-run-id="' + runId + '"]').length; }).length;
-        if (!confirm('Re-run ' + runIds.length + ' failed import' + (runIds.length === 1 ? '' : 's')
-                + (unlisted ? ' (' + unlisted + ' not shown in this list)' : '')
-                + "? The fields they map will be overwritten with the APIs' current values.")) {
-            return;
-        }
-
-        $button.prop('disabled', true);
-        const $progress = $('#adif-imp-retry-progress');
-        const total = runIds.length;
-        let done = 0;
-        let stillWaiting = 0;
-        let notMapped = 0;
-        let failed = 0;
-
-        const next = function () {
-            if (done >= total) {
-                $button.prop('disabled', false);
-                const parts = [(done - notMapped - failed) + ' retried'];
-                if (notMapped) {
-                    parts.push(notMapped + ' skipped because their fields are no longer mapped');
-                }
-                if (failed) {
-                    parts.push(failed + " couldn't be retried");
-                }
-                parts.push(stillWaiting ? stillWaiting + ' still need attention' : 'nothing left waiting');
-                $progress.text(parts.join(', ') + '. Reload the page to see the new runs.');
-                return;
-            }
-            $progress.text('Retrying ' + (done + 1) + ' of ' + total + '…');
-            const runId = runIds[done];
-            const $details = $('details[data-run-id="' + runId + '"]');
-            const $retryButton = $details.find('.adif-imp-retry').first();
-            const request = $details.length && $retryButton.length && !$retryButton.prop('disabled')
-                ? retryRun(runId, $details, $retryButton)
-                : retryUnlisted(runId);
-            request.then(function (response) {
-                retriedRuns[runId] = true;
-                if (response && response.status === 'not_mapped') {
-                    notMapped++;
-                } else if (!response || response.status !== 'success') {
-                    failed++;
-                } else if (!response.run || response.run.outcome === 'attention') {
-                    stillWaiting++;
-                }
-                done++;
-                next();
-            });
-        };
-        next();
-    });
-
-    // "Never imported" (pages/Imports.php): first imports for records that have never had one, sent as
-    // 'import-unattempted' (see ImportStatus::runFirstImport), one at a time or all in a row
+    // "Never imported" (pages/Imports.php): the first import for one place, from its row's button, sent
+    // as 'import-unattempted' (see ImportStatus::runFirstImport)
     const neverUnits = {};
     readJson('adif-imp-never-units').forEach(function (unit) {
         neverUnits[unit.key] = unit;
     });
-    const finishedUnits = {};
 
     // Shows a first import's outcome in its row, when the row is on the page
     function renderFirstImport(unitKey, response) {
@@ -364,9 +294,6 @@
                 return { status: 'error', message: (error && error.message) || String(error) };
             })
             .then(function (response) {
-                if (response.status === 'success' || response.status === 'not_pending') {
-                    finishedUnits[unit.key] = true;
-                }
                 renderFirstImport(unit.key, response);
                 return response;
             });
@@ -381,68 +308,6 @@
             return;
         }
         runFirstImport(unit);
-    });
-
-    $(document).on('click', '#adif-imp-import-all', function () {
-        const $button = $(this);
-        const units = Object.keys(neverUnits)
-            .filter(function (key) { return !finishedUnits[key]; })
-            .map(function (key) { return neverUnits[key]; });
-        const $progress = $('#adif-imp-import-progress');
-        if (!units.length) {
-            $progress.text('Nothing left to import. Reload the page to check again.');
-            return;
-        }
-        if (!confirm('Run the first import for ' + units.length + ' place' + (units.length === 1 ? '' : 's')
-                + '? Each one calls the APIs its mappings use and fills the empty fields. They run one at a time;'
-                + ' keep this page open until it finishes.')) {
-            return;
-        }
-
-        $button.prop('disabled', true);
-        $('.adif-imp-import-one').prop('disabled', true);
-        const total = units.length;
-        let done = 0;
-        let imported = 0;
-        let attention = 0;
-        let notPending = 0;
-        let failed = 0;
-
-        const next = function () {
-            if (done >= total) {
-                $button.prop('disabled', false);
-                $('.adif-imp-import-one').filter(function () { return $(this).text() === 'Import'; }).prop('disabled', false);
-                const parts = [imported + ' imported'];
-                if (attention) {
-                    parts.push(attention + ' need attention (retry them from the run list after reloading)');
-                }
-                if (notPending) {
-                    parts.push(notPending + ' no longer needed an import');
-                }
-                if (failed) {
-                    parts.push(failed + " couldn't be imported (see their rows)");
-                }
-                $progress.text(parts.join(', ') + '.');
-                return;
-            }
-            $progress.text('Importing ' + (done + 1) + ' of ' + total + '…');
-            runFirstImport(units[done]).then(function (response) {
-                if (response.status === 'success') {
-                    if (response.run && response.run.outcome === 'attention') {
-                        attention++;
-                    } else {
-                        imported++;
-                    }
-                } else if (response.status === 'not_pending') {
-                    notPending++;
-                } else {
-                    failed++;
-                }
-                done++;
-                next();
-            });
-        };
-        next();
     });
 
     // "Run queued imports now" (pages/Imports.php): works through the background queue without

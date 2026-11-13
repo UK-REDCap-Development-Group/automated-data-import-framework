@@ -12,8 +12,8 @@ use REDCap;
 // It's requested on the Import Status page (startImportRefresh) and run by the module's cron
 // (processImportRefreshJobs, "adif_import_refresh" in config.json), never during the request:
 //   - only during the off-peak hours set in the module's system settings (server time)
-//   - at most a set number of imports a minute across the whole server, spaced out evenly within the
-//     minute rather than in bursts, and one project per cron run, taking turns when several projects
+//   - within the server-wide limit on background imports a minute, shared with ADIF's other background
+//     jobs (see ImportRateLimit), and one project per cron run, taking turns when several projects
 //     have a refresh going
 // so a large project's refresh is spread over as many nights as it needs. Each import is logged like
 // any other run ("API import: bulk refresh requested by <user>"), so failures are flagged and retried
@@ -28,11 +28,9 @@ trait ImportRefresh
     private static $importRefreshJobSetting = 'import-refresh-job';
     private static $importRefreshRecordsSetting = 'import-refresh-records';
 
-    // Defaults for the system settings (config.json): 22:00 to 06:00 server time, 20 imports a minute
+    // Defaults for the system settings (config.json): 22:00 to 06:00 server time
     private static $importRefreshDefaultStartHour = 22;
     private static $importRefreshDefaultEndHour = 6;
-    private static $importRefreshDefaultPerMinute = 20;
-    private static $importRefreshMaxPerMinute = 300;
 
     // How long one cron run keeps importing (seconds); the cron runs once a minute
     private static $importRefreshCronSeconds = 50;
@@ -56,8 +54,9 @@ trait ImportRefresh
         return is_array($job) && in_array($job['status'] ?? '', ['waiting', 'running'], true);
     }
 
-    // The off-peak hours and pace from the system settings, and whether $time (default now) is inside
-    // them: start, end (hours, server time), per_minute, open. Equal start and end hours mean any time.
+    // The off-peak hours from the system settings, and whether $time (default now) is inside them:
+    // start, end (hours, server time), open, and per_minute, the server-wide limit on background
+    // imports (see ImportRateLimit), for the page's estimates. Equal start and end hours mean any time.
     public function importRefreshWindow($time = null)
     {
         $hour = function ($key, $default) {
@@ -67,9 +66,7 @@ trait ImportRefresh
         $start = $hour('adif-refresh-start-hour', self::$importRefreshDefaultStartHour);
         $end = $hour('adif-refresh-end-hour', self::$importRefreshDefaultEndHour);
 
-        $perMinute = $this->getSystemSetting('adif-refresh-per-minute');
-        $perMinute = is_numeric($perMinute) && (int) $perMinute > 0
-            ? min((int) $perMinute, self::$importRefreshMaxPerMinute) : self::$importRefreshDefaultPerMinute;
+        $perMinute = $this->importsPerMinute();
 
         $now = (int) date('G', $time ?? time());
         $open = $start === $end
@@ -202,7 +199,7 @@ trait ImportRefresh
             $this->setSystemSetting('import-refresh-last-project', $projectId);
 
             $_GET['pid'] = $projectId;
-            $result = $this->runImportRefreshBatch($projectId, $deadline, 60 / $window['per_minute']);
+            $result = $this->runImportRefreshBatch($projectId, $deadline);
             return "ADIF bulk refresh, project $projectId: {$result['imports']} import(s) for {$result['records']}"
                 . " record(s); {$result['remaining']} record(s) left.";
         } catch (\Throwable $e) {
@@ -219,9 +216,9 @@ trait ImportRefresh
     }
 
     // Works through the project's refresh from where it left off until $deadline, the end of the
-    // off-peak hours, or the last record, starting an import at most every $interval seconds.
+    // off-peak hours, or the last record, within the server-wide import limit (see ImportRateLimit).
     // Returns counts for this run: records, imports, remaining.
-    private function runImportRefreshBatch($projectId, $deadline, $interval)
+    private function runImportRefreshBatch($projectId, $deadline)
     {
         $counts = ['records' => 0, 'imports' => 0, 'remaining' => 0];
         $job = $this->importRefreshJob($projectId);
@@ -252,7 +249,6 @@ trait ImportRefresh
 
         $mode = !empty($job['bypass_cache']) ? \UKModules\ADIF\Cache\FetchMode::Live : null;
         $description = 'API import: bulk refresh requested by ' . ($job['requested_by'] ?: '?');
-        $lastStart = 0.0;
         $stillOpen = fn() => time() < $deadline && $this->importRefreshWindow()['open'];
 
         while ($job['next'] < count($records) && $stillOpen()) {
@@ -282,12 +278,12 @@ trait ImportRefresh
                         continue;
                     }
 
-                    // Spread the imports evenly over the minute rather than all at its start
-                    $wait = $lastStart + $interval - microtime(true);
-                    if ($wait > 0) {
-                        usleep((int) ($wait * 1000000));
+                    // This import's turn under the server-wide limit. None before the deadline: stop
+                    // here, and the record (including any of its places already done) is imported again
+                    // from the start next time.
+                    if (!$this->awaitImportSlot($deadline)) {
+                        break 3;
                     }
-                    $lastStart = microtime(true);
 
                     if ($this->runRefreshImport($projectId, $place, $mode, $description) === 'attention') {
                         $job['attention']++;

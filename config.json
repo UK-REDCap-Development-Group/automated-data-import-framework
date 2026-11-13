@@ -205,6 +205,12 @@
             ]
         },
         {
+            "key": "adif-imports-per-minute",
+            "name": "<b>Background imports:</b> the most imports ADIF starts per minute across the whole server, spaced evenly through the minute. One limit shared by everything ADIF runs in the background: survey imports queued for the cron, Refresh all records and Retry all failed. Single retries and imports clicked on the Import Status page, and imports run while a respondent waits, aren't counted. Leave blank for 20 (at most 300). Each import makes one request per API endpoint its record's mappings read from.",
+            "type": "text",
+            "validation": "integer"
+        },
+        {
             "key": "adif-refresh-start-hour",
             "name": "<b>Bulk refresh:</b> a refresh of every record's imports, requested on a project's Import Status page, runs only during off-peak hours. They start at (server time; leave blank for 22:00)",
             "type": "dropdown",
@@ -409,12 +415,6 @@
                     "name": "23:00"
                 }
             ]
-        },
-        {
-            "key": "adif-refresh-per-minute",
-            "name": "Most imports bulk refreshes run per minute, across the whole server, spaced evenly through the minute. Leave blank for 20. Each import makes one request per API endpoint its record's mappings read from.",
-            "type": "text",
-            "validation": "integer"
         }
     ],
     "auth-ajax-actions": [
@@ -443,6 +443,20 @@
             "cron_name": "adif_import_refresh",
             "cron_description": "ADIF: works through the bulk import refreshes requested on projects' Import Status pages, during the off-peak hours set in the module's system settings",
             "method": "processImportRefreshJobs",
+            "cron_frequency": "60",
+            "cron_max_run_time": "600"
+        },
+        {
+            "cron_name": "adif_retry_all",
+            "cron_description": "ADIF: re-runs the failed imports queued by Retry all failed on projects' Import Status pages",
+            "method": "processRetryAllJobs",
+            "cron_frequency": "60",
+            "cron_max_run_time": "600"
+        },
+        {
+            "cron_name": "adif_import_all",
+            "cron_description": "ADIF: runs the first imports queued by Import all (Never imported) on projects' Import Status pages",
+            "method": "processImportAllJobs",
             "cron_frequency": "60",
             "cron_max_run_time": "600"
         }

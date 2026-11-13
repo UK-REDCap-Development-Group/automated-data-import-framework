@@ -7,7 +7,9 @@ namespace UKModules\ADIF;
 // import (queueImport), and the module's cron (processImportQueue, see "crons" in config.json) runs
 // it within a minute or so through the same importMappedData() and logImportRun() as every other
 // import, so a slow or unavailable API never holds up the completion page. A queued import that
-// fails is flagged on the Imports page like any other run, and retried from there.
+// fails is flagged on the Imports page like any other run, and retried from there. Queued imports
+// count toward the server-wide limit on background imports a minute (see ImportRateLimit), so a burst
+// of submissions is worked through at that pace.
 //
 // The queue lives in the module log, like the runs themselves - appending an entry is atomic, so
 // surveys submitted at the same moment can't overwrite each other's place in it:
@@ -208,6 +210,12 @@ trait ImportQueue
         $handled = 0;
         foreach ($groups as $key => $items) {
             if (time() >= $deadline || $handled >= $limit) {
+                break;
+            }
+            // This import's turn under the server-wide limit on background imports, shared with the bulk
+            // refresh and Retry all failed (see ImportRateLimit). None before the deadline: the rest wait
+            // for the next run.
+            if (!$this->awaitImportSlot($deadline)) {
                 break;
             }
             $handled++;

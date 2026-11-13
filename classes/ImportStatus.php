@@ -14,7 +14,8 @@ trait ImportStatus
     // Every import run's log entries share these (see ImportLog::logImportRun): each endpoint request
     // is logged with the exact message below, and the summary entry's message is the run's
     // description, e.g. "API import after survey completion". A manual retry logs as
-    // "API import: manual retry by <user>" and is picked up here automatically.
+    // "API import: manual retry by <user>" (or, from Retry all failed, "API import: retry all failed,
+    // requested by <user>") and is picked up here automatically.
     private static $importLogPrefix = 'API import';
     private static $importRequestLogMessage = 'API import: endpoint request';
 
@@ -726,9 +727,11 @@ trait ImportStatus
     // is flagged and can be retried like any other. Returns:
     //   ['status' => 'success', 'run' => <the new run, as retryImportRun() returns one>]
     //   ['status' => 'not_pending', 'message' => ...]  no longer waiting on a first import
-    //   ['status' => 'error', 'message' => ...]        e.g. none of its lookup values can be read yet
+    //   ['status' => 'not_ready', 'message' => ...]    none of its lookup values can be read yet
     //   ['status' => 'locked', 'message' => ...]       the same import was started moments ago
-    public function runFirstImport($projectId, $record, $eventId, $instrument, $instance)
+    // $requestedBy is set when the import is part of Import all, run by the cron with nobody logged in
+    // (see ImportAll): the run is then described as requested by that user.
+    public function runFirstImport($projectId, $record, $eventId, $instrument, $instance, $requestedBy = null)
     {
         $unit = null;
         foreach ($this->importNeverAttempted($projectId, $record) as $candidate) {
@@ -744,11 +747,17 @@ trait ImportStatus
                 . ' changed. Reload the page to see where it stands.'];
         }
         if (!$unit['importable']) {
-            return ['status' => 'error', 'message' => 'Not imported yet: ' . implode(' ', $unit['missing'])];
+            return ['status' => 'not_ready', 'message' => 'Not imported yet: ' . implode(' ', $unit['missing'])];
         }
 
-        $user = $this->getUser();
-        $username = $user ? $user->getUsername() : '?';
+        if ($requestedBy === null) {
+            $user = $this->getUser();
+            $username = $user ? $user->getUsername() : '?';
+            $description = "API import: manual import by $username";
+        } else {
+            $username = '';
+            $description = "API import: import all, requested by $requestedBy";
+        }
         $lock = 'import-first-' . md5(json_encode([(int) $projectId, $unit['record'], $unit['event_id'],
                 $unit['instrument'], $unit['repeat_instance']]));
         if (!$this->importRetryAcquireLock($lock)) {
@@ -756,7 +765,6 @@ trait ImportStatus
                 . ' seconds ago and may still be running. Wait a moment, then reload the page.'];
         }
 
-        $description = "API import: manual import by $username";
         try {
             $start = microtime(true);
             try {
@@ -912,10 +920,18 @@ trait ImportStatus
     // An import that throws is reported inside the run (its errors), as it is for the survey hook.
     // Unlike the survey hook, errors are returned rather than only logged: a user waiting on the
     // button needs to see them.
-    public function retryImportRun($projectId, array $run, $bypassCache = true)
+    // $requestedBy is set when the retry is part of Retry all failed, run by the cron with nobody logged
+    // in (see ImportRetryAll): the run is then described as requested by that user.
+    public function retryImportRun($projectId, array $run, $bypassCache = true, $requestedBy = null)
     {
-        $user = $this->getUser();
-        $username = $user ? $user->getUsername() : '?';
+        if ($requestedBy === null) {
+            $user = $this->getUser();
+            $username = $user ? $user->getUsername() : '?';
+            $description = "API import: manual retry by $username";
+        } else {
+            $username = '';
+            $description = "API import: retry all failed, requested by $requestedBy";
+        }
 
         $check = $this->importRetryMappingCheck($projectId, $run);
         if ($check['problem'] !== null) {
@@ -946,13 +962,13 @@ trait ImportStatus
             $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
             $summary['repeat_instance'] = $run['repeat_instance'] ?? 1;
 
-            $this->logImportRun("API import: manual retry by $username", $projectId, $run['record'],
+            $this->logImportRun($description, $projectId, $run['record'],
                 $run['event_id'], $run['instrument'], $summary);
         } finally {
             $this->importRetryReleaseLock($lock);
         }
 
-        return ['status' => 'success', 'run' => $this->importRunFromSummary($projectId, "API import: manual retry by $username",
+        return ['status' => 'success', 'run' => $this->importRunFromSummary($projectId, $description,
             $username, $run['record'], $run['event_id'], $run['instrument'], $run['repeat_instance'] ?? 1, $summary)];
     }
 

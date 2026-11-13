@@ -35,6 +35,54 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_refresh_action']
     $_GET['refresh'] = $refreshOutcome;
 }
 
+// Retry all failed posts here too (see classes/ImportRetryAll.php): it queues the retries for the
+// cron instead of running them while the page waits, so a long list can't hang the browser. Users who
+// can resolve import errors can start or cancel it.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_retry_action'])) {
+    $retryOutcome = 'denied';
+    $retryRecord = trim((string) ($_POST['record'] ?? ''));
+    if ($module->canResolveImports($pid)) {
+        try {
+            $retryOutcome = $_POST['adif_retry_action'] === 'cancel'
+                ? $module->cancelRetryAll($pid)
+                : $module->startRetryAll($pid, !empty($_POST['bypass_cache']), $retryRecord)['status'];
+        } catch (\Throwable $e) {
+            $retryOutcome = 'error';
+            error_log("ADIF: couldn't start or cancel retry all in project $pid: " . $e->getMessage());
+        }
+    }
+    if (!headers_sent()) {
+        header('Location: ' . $module->getUrl('pages/Imports.php') . '&retryall=' . rawurlencode($retryOutcome)
+            . ($retryRecord !== '' ? '&record=' . rawurlencode($retryRecord) : '') . '#adif-imp-retry-all-bar', true, 303);
+        exit;
+    }
+    $_GET['retryall'] = $retryOutcome;
+}
+
+// Import all, under Never imported, works the same way (see classes/ImportAll.php): it queues the first
+// imports for the cron, which runs them within the same server-wide limit as Retry all. The same users
+// can start or cancel it.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_import_all_action'])) {
+    $importAllOutcome = 'denied';
+    $importAllRecord = trim((string) ($_POST['record'] ?? ''));
+    if ($module->canResolveImports($pid)) {
+        try {
+            $importAllOutcome = $_POST['adif_import_all_action'] === 'cancel'
+                ? $module->cancelImportAll($pid)
+                : $module->startImportAll($pid, $importAllRecord)['status'];
+        } catch (\Throwable $e) {
+            $importAllOutcome = 'error';
+            error_log("ADIF: couldn't start or cancel import all in project $pid: " . $e->getMessage());
+        }
+    }
+    if (!headers_sent()) {
+        header('Location: ' . $module->getUrl('pages/Imports.php') . '&importall=' . rawurlencode($importAllOutcome)
+            . ($importAllRecord !== '' ? '&record=' . rawurlencode($importAllRecord) : '') . '#adif-imp-never', true, 303);
+        exit;
+    }
+    $_GET['importall'] = $importAllOutcome;
+}
+
 require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 
 $module->requireModuleView($pid);
@@ -123,6 +171,38 @@ $refreshMessages = [
     'error' => ['error', 'The refresh couldn\'t be started or cancelled. The server\'s PHP error log has the details.'],
 ];
 $refreshNotice = $refreshMessages[(string) ($_GET['refresh'] ?? '')] ?? null;
+
+// Retry all failed (see classes/ImportRetryAll.php): the latest job, and what the last button press did
+$retryJob = $canRetry ? $module->importRetryAllJob($pid) : null;
+$retryActive = $module::retryAllActive($retryJob);
+$retryMessages = [
+    'started' => ['ok', 'Retries queued. They run in the background, usually starting within a minute; progress shows here. You can leave this page.'],
+    'active' => ['error', 'Retry all is already going. Cancel it first to start another.'],
+    'nothing_to_retry' => ['empty', 'No imports need retrying right now.'],
+    'cancelled' => ['ok', 'Retry all cancelled. The retries it already ran stay.'],
+    'not_active' => ['empty', 'There\'s no retry all going to cancel.'],
+    'denied' => ['error', 'Retrying imports needs View & Edit rights on every instrument with ADIF mappings, or Project Design rights.'],
+    'error' => ['error', 'Retry all couldn\'t be started or cancelled. The server\'s PHP error log has the details.'],
+];
+$retryNotice = $retryMessages[(string) ($_GET['retryall'] ?? '')] ?? null;
+
+// Import all, under Never imported (see classes/ImportAll.php): the latest job, and what the last button
+// press did
+$importAllJob = $canRetry ? $module->importAllJob($pid) : null;
+$importAllActive = $module::importAllActive($importAllJob);
+$importAllMessages = [
+    'started' => ['ok', 'Imports queued. They run in the background, usually starting within a minute; progress shows here. You can leave this page.'],
+    'active' => ['error', 'Import all is already going. Cancel it first to start another.'],
+    'nothing_to_import' => ['empty', 'Nothing listed here can be imported right now.'],
+    'cancelled' => ['ok', 'Import all cancelled. The imports it already ran stay.'],
+    'not_active' => ['empty', 'There\'s no import all going to cancel.'],
+    'denied' => ['error', 'Running imports needs View & Edit rights on every instrument with ADIF mappings, or Project Design rights.'],
+    'error' => ['error', 'Import all couldn\'t be started or cancelled. The server\'s PHP error log has the details.'],
+];
+$importAllNotice = $importAllMessages[(string) ($_GET['importall'] ?? '')] ?? null;
+// Whether to show Import all's status even with nothing left to list: while it runs, and for a day after
+$importAllRecent = $importAllActive || $importAllNotice !== null
+    || ($importAllJob !== null && (int) $importAllJob['finished_at'] >= time() - 86400);
 $neverRecordCount = count(array_unique(array_column($neverImported, 'record')));
 // The table lists this many places; Import all still covers every one
 $neverShownCap = 200;
@@ -442,8 +522,9 @@ function adif_imp_instrument($run)
             the mappings. It runs in the background only during off-peak hours,
             <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?></strong> to
             <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['end'])) ?></strong> server time (it's
-            <?= adif_imp_h(date('H:i')) ?> now), at about <?= (int) $refreshWindow['per_minute'] ?> imports a minute
-            across the server, so a large project can take several nights. Each import is listed below like any other
+            <?= adif_imp_h(date('H:i')) ?> now), within the server's limit of <?= (int) $refreshWindow['per_minute'] ?>
+            background imports a minute, which every project's background imports share, so a large project can take
+            several nights. Each import is listed below like any other
             run.</p>
 
         <?php if ($refreshNotice !== null): ?>
@@ -493,7 +574,7 @@ function adif_imp_instrument($run)
                 <?php endif; ?>
                 <?php if ($minutesLeft !== null): ?>
                     Roughly <?= $minutesLeft < 90 ? $minutesLeft . ' minute' . ($minutesLeft === 1 ? '' : 's')
-                        : round($minutesLeft / 60, 1) . ' hours' ?> of off-peak time to go, if no other project is refreshing.
+                        : round($minutesLeft / 60, 1) . ' hours' ?> of off-peak time to go, if nothing else is using the server's import limit.
                 <?php endif; ?>
                 <?php if ($refreshJob['status'] === 'cancelled'): ?>
                     Cancelled by <?= adif_imp_h($refreshJob['cancelled_by'] ?? '?') ?> on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>.
@@ -539,7 +620,7 @@ function adif_imp_instrument($run)
     <?php if ($neverImportedError !== null): ?>
         <div class="adif-alert adif-alert-error" role="alert">Couldn't check for records that have never been
             imported: <?= adif_imp_h($neverImportedError) ?></div>
-    <?php elseif (!empty($neverImported)): ?>
+    <?php elseif (!empty($neverImported) || ($canRetry && $importAllRecent)): ?>
         <section class="adif-dt-card adif-imp-never" id="adif-imp-never">
             <h4>Never imported: <?= count($neverImported) ?> place<?= count($neverImported) === 1 ? '' : 's' ?>
                 in <?= $neverRecordCount ?> record<?= $neverRecordCount === 1 ? '' : 's' ?><?= $recordFilter !== ''
@@ -550,14 +631,61 @@ function adif_imp_instrument($run)
                 own. An import started here works like a survey's: it calls the APIs (or uses stored data, as each
                 source's cache settings allow), fills the empty fields, and is logged and listed below like any other run.</p>
 
-            <?php if ($canRetry && !empty($neverImportable)): ?>
-                <div class="adif-imp-toolbar">
-                    <button type="button" id="adif-imp-import-all" class="btn btn-primaryrc btn-sm"
-                            title="Runs the first import for every place listed that has the values its lookups need, one after another">
-                        Import all (<?= count($neverImportable) ?>)
-                    </button>
-                    <span id="adif-imp-import-progress" class="adif-imp-progress" aria-live="polite"></span>
+            <?php if ($canRetry && (!empty($neverImportable) || $importAllRecent)): ?>
+                <?php
+                $importAllTotal = $importAllJob !== null ? max(1, count($importAllJob['places'])) : 1;
+                $importAllDone = $importAllJob !== null ? min($importAllTotal, (int) $importAllJob['next']) : 0;
+                // The counts of a job, for its progress line and its summary once it's over
+                $importAllCounts = $importAllJob === null ? '' : implode(', ', array_filter([
+                    $importAllJob['imported'] > 0 ? number_format($importAllJob['imported']) . ' imported' : '',
+                    $importAllJob['attention'] > 0 ? number_format($importAllJob['attention']) . ' need attention' : '',
+                    $importAllJob['skipped'] > 0 ? number_format($importAllJob['skipped']) . ' no longer needed or not ready' : '',
+                    $importAllJob['failed'] > 0 ? number_format($importAllJob['failed']) . " couldn't be imported" : '',
+                ]));
+                ?>
+                <div class="adif-imp-toolbar" id="adif-imp-import-all-bar">
+                    <?php if ($importAllActive): ?>
+                        <span class="adif-status-pill adif-status-stale"><?= $importAllJob['status'] === 'waiting' ? 'Import all queued' : 'Importing in the background' ?></span>
+                        <span class="adif-imp-progress"><?= number_format($importAllDone) ?> of <?= number_format($importAllTotal) ?> done<?= $importAllCounts !== '' ? ': ' . adif_imp_h($importAllCounts) : '' ?>.
+                            Requested by <?= adif_imp_h($importAllJob['requested_by']) ?> <?= adif_imp_h(adif_imp_ago($importAllJob['requested_at'])) ?>.
+                            Reload the page to see its progress.</span>
+                        <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                              onsubmit="return confirm('Cancel import all? The imports already run stay.');">
+                            <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                            <input type="hidden" name="adif_import_all_action" value="cancel">
+                            <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                            <button type="submit" class="btn btn-defaultrc btn-sm">Cancel</button>
+                        </form>
+                    <?php elseif (!empty($neverImportable)): ?>
+                        <?php
+                        $importAllConfirm = 'Run the first import for ' . count($neverImportable) . ' place'
+                            . (count($neverImportable) === 1 ? '' : 's') . '? Each one calls the APIs its mappings use and fills the'
+                            . ' empty fields. They run in the background, starting within a minute or so; you can leave this page.';
+                        ?>
+                        <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                              onsubmit="return confirm(<?= adif_imp_h(json_encode($importAllConfirm)) ?>);">
+                            <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                            <input type="hidden" name="adif_import_all_action" value="start">
+                            <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                            <button type="submit" class="btn btn-primaryrc btn-sm"
+                                    title="Queues the first import of every place listed that has the values its lookups need: <?= count($neverImportable) ?>, listed or not. They run in the background; one imported by then is left alone.">
+                                Import all (<?= count($neverImportable) ?>)
+                            </button>
+                        </form>
+                    <?php endif; ?>
+                    <?php if (!$importAllActive && $importAllJob !== null && (int) $importAllJob['finished_at'] >= time() - 86400): ?>
+                        <span class="adif-imp-progress">Last import all, requested by <?= adif_imp_h($importAllJob['requested_by']) ?>:
+                            <?= match ($importAllJob['status']) {
+                                'done' => 'finished ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])),
+                                'cancelled' => 'cancelled by ' . adif_imp_h($importAllJob['cancelled_by'] ?? '?') . ' ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])),
+                                default => 'stopped ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])) . ': ' . adif_imp_h($importAllJob['message'] ?? ''),
+                            } ?>, <?= number_format($importAllDone) ?> of <?= number_format($importAllTotal) ?> done<?= $importAllCounts !== '' ? ' (' . adif_imp_h($importAllCounts) . ')' : '' ?>.</span>
+                    <?php endif; ?>
                 </div>
+                <?php if ($importAllNotice !== null): ?>
+                    <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$importAllNotice[0]] ?>"
+                         role="status"><?= adif_imp_h($importAllNotice[1]) ?></div>
+                <?php endif; ?>
                 <script type="application/json" id="adif-imp-never-units"><?= json_encode(array_map(fn($unit) => [
                     'key' => $unit['key'],
                     'record' => $unit['record'],
@@ -575,6 +703,9 @@ function adif_imp_instrument($run)
                     see each one's status.</p>
             <?php endif; ?>
 
+            <?php if (empty($neverImported)): ?>
+                <p class="adif-imp-note">Nothing is waiting on a first import now<?= $recordFilter !== '' ? ' for this record' : '' ?>.</p>
+            <?php else: ?>
             <div class="adif-imp-scroll">
                 <table class="adif-headers-table adif-imp-never-table">
                     <thead>
@@ -620,6 +751,7 @@ function adif_imp_instrument($run)
                     </tbody>
                 </table>
             </div>
+            <?php endif; ?>
             <?php if (count($neverImported) > $neverShownCap): ?>
                 <p class="adif-imp-note">Showing the first <?= $neverShownCap ?> of <?= count($neverImported) ?>.<?= $canRetry
                     ? ' Import all covers every one that can be imported, listed or not.' : '' ?></p>
@@ -627,19 +759,66 @@ function adif_imp_instrument($run)
         </section>
     <?php endif; ?>
 
-    <?php if (!empty($retryTargets)): ?>
-        <div class="adif-imp-toolbar">
+    <?php if ($canRetry && (!empty($retryTargets) || $retryJob !== null || $retryNotice !== null)): ?>
+        <?php
+        $retryTotal = $retryJob !== null ? max(1, count($retryJob['run_ids'])) : 1;
+        $retryDone = $retryJob !== null ? min($retryTotal, (int) $retryJob['next']) : 0;
+        // The counts of a job, for its progress line and its summary once it's over
+        $retryCounts = $retryJob === null ? '' : implode(', ', array_filter([
+            $retryJob['retried'] > 0 ? number_format($retryJob['retried']) . ' now fine' : '',
+            $retryJob['attention'] > 0 ? number_format($retryJob['attention']) . ' still need attention' : '',
+            $retryJob['skipped'] > 0 ? number_format($retryJob['skipped']) . ' no longer needed a retry' : '',
+            $retryJob['failed'] > 0 ? number_format($retryJob['failed']) . " couldn't be retried" : '',
+        ]));
+        ?>
+        <div class="adif-imp-toolbar" id="adif-imp-retry-all-bar">
             <label class="adif-imp-bypass" for="adif-imp-bypass" title="On (recommended): a retry calls the APIs even for requests the cache could answer, so data stored during an outage isn't reused. Off: stored responses are reused where they exist.">
-                <input type="checkbox" id="adif-imp-bypass" checked>
+                <input type="checkbox" id="adif-imp-bypass" name="bypass_cache" value="1" form="adif-imp-retry-all-form" checked>
                 Skip stored data and call the APIs
             </label>
-            <button type="button" id="adif-imp-retry-all" class="btn btn-primaryrc btn-sm"
-                    title="Re-runs every import whose latest run needs attention, one after another: <?= count($retryTargets) ?> among the last 500 runs<?= $hiddenTargets > 0 ? ", $hiddenTargets of them not shown in this list" : '' ?>. A failed run whose import has run again since, or that was dismissed, is left alone.">
-                Retry all failed (<?= count($retryTargets) ?>)
-            </button>
-            <span id="adif-imp-retry-progress" class="adif-imp-progress" aria-live="polite"></span>
+            <?php if ($retryActive): ?>
+                <span class="adif-status-pill adif-status-stale"><?= $retryJob['status'] === 'waiting' ? 'Retry all queued' : 'Retrying in the background' ?></span>
+                <span class="adif-imp-progress"><?= number_format($retryDone) ?> of <?= number_format($retryTotal) ?> done<?= $retryCounts !== '' ? ': ' . adif_imp_h($retryCounts) : '' ?>.
+                    Requested by <?= adif_imp_h($retryJob['requested_by']) ?> <?= adif_imp_h(adif_imp_ago($retryJob['requested_at'])) ?>.
+                    Reload the page to see its progress.</span>
+                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                      onsubmit="return confirm('Cancel retry all? The retries already run stay.');">
+                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                    <input type="hidden" name="adif_retry_action" value="cancel">
+                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                    <button type="submit" class="btn btn-defaultrc btn-sm">Cancel</button>
+                </form>
+            <?php elseif (!empty($retryTargets)): ?>
+                <?php
+                $retryConfirm = 'Re-run ' . count($retryTargets) . ' failed import' . (count($retryTargets) === 1 ? '' : 's')
+                    . ($hiddenTargets > 0 ? " ($hiddenTargets not shown in this list)" : '')
+                    . '? The fields they map will be overwritten with the APIs\' current values. They run in the background,'
+                    . ' starting within a minute or so; you can leave this page.';
+                ?>
+                <form method="post" id="adif-imp-retry-all-form" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                      onsubmit="return confirm(<?= adif_imp_h(json_encode($retryConfirm)) ?>);">
+                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                    <input type="hidden" name="adif_retry_action" value="start">
+                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                    <button type="submit" class="btn btn-primaryrc btn-sm"
+                            title="Queues a retry of every import whose latest run needs attention: <?= count($retryTargets) ?> among the last 500 runs<?= $hiddenTargets > 0 ? ", $hiddenTargets of them not shown in this list" : '' ?>. They run in the background; a failed run whose import has run again by then, or that was dismissed, is left alone.">
+                        Retry all failed (<?= count($retryTargets) ?>)
+                    </button>
+                </form>
+            <?php endif; ?>
+            <?php if (!$retryActive && $retryJob !== null && $retryJob['finished_at'] >= time() - 86400): ?>
+                <span class="adif-imp-progress">Last retry all, requested by <?= adif_imp_h($retryJob['requested_by']) ?>:
+                    <?= match ($retryJob['status']) {
+                        'done' => 'finished ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])),
+                        'cancelled' => 'cancelled by ' . adif_imp_h($retryJob['cancelled_by'] ?? '?') . ' ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])),
+                        default => 'stopped ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])) . ': ' . adif_imp_h($retryJob['message'] ?? ''),
+                    } ?>, <?= number_format($retryDone) ?> of <?= number_format($retryTotal) ?> done<?= $retryCounts !== '' ? ' (' . adif_imp_h($retryCounts) . ')' : '' ?>.</span>
+            <?php endif; ?>
         </div>
-        <script type="application/json" id="adif-imp-retry-targets"><?= json_encode($retryTargets, JSON_HEX_TAG | JSON_HEX_AMP) ?></script>
+        <?php if ($retryNotice !== null): ?>
+            <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$retryNotice[0]] ?>"
+                 role="status"><?= adif_imp_h($retryNotice[1]) ?></div>
+        <?php endif; ?>
     <?php endif; ?>
 
     <h4><?= count($runs) ?> run<?= count($runs) === 1 ? '' : 's' ?><?= $statusFilter !== ''

@@ -123,9 +123,29 @@ since a run's own entries never change; Retry all leaves those alone, and dismis
 (`ImportStatus::importRetryTargets()`).
 
 It covers the most recent 500 runs, not only those shown in the list (the button's tooltip says how
-many aren't shown), or just the filtered record's when the record filter is set. Runs on the page get
-their pill and result updated in place; the rest are tallied in the progress line. The button only
+many aren't shown), or just the filtered record's when the record filter is set. The button only
 appears when there is something to retry.
+
+**It runs in the background, not in the browser** (`classes/ImportRetryAll.php`). The button posts
+to the page, which saves a job listing the runs to retry (the project setting `import-retry-all-job`)
+and redirects back (`?retryall=<outcome>`); the page is free straight away and can be closed. The
+cron `adif_retry_all` (every minute) works through the jobs:
+
+- It isn't held to the bulk refresh's off-peak hours, since a list of failures is wanted soon, but it
+  counts toward the server-wide limit on background imports (see [below](#the-server-wide-import-limit)),
+  for up to 50 seconds a run. Projects with a job waiting take turns starting.
+- Just before each retry the run is checked against the current retry targets: one whose import has
+  run again since, was dismissed, or has dropped out of the latest 500 runs is skipped. A run being
+  retried by hand at that moment (the per-run lock) or whose fields are no longer mapped is skipped too.
+- Each retry goes through `retryImportRun()`, like the per-run button, and is logged as "API import:
+  retry all failed, requested by <user>". The **Skip stored data** choice made when queueing applies.
+- The toolbar shows the job's progress while it runs (reload the page to update it), with a Cancel
+  button, and a summary of the last job for a day afterwards: how many are now fine, still need
+  attention, were skipped, or couldn't be retried. Progress is saved after each retry, re-reading the
+  job first so a cancel wins. One job per project at a time.
+- Who: the same users who can retry (see [permissions.md](permissions.md)); a user in a data access
+  group queues only their group's runs. The job itself is logged as "ADIF retry all requested /
+  cancelled / done / failed".
 
 ## Records never imported
 
@@ -156,8 +176,9 @@ Each place is also checked for the values its `[placeholders]` need, using the i
 | **Partly ready** | Some requests can't look their values up yet. Importing fills the rest, and the run is flagged for the fields left empty. |
 | **Waiting on data** | No request can look its values up yet (no address entered, say). Not offered for import. |
 
-**Import** (per row) and **Import all (N)** send `import-unattempted`, which calls
-`ImportStatus::runFirstImport()`:
+**Import** (per row) sends `import-unattempted`, which calls `ImportStatus::runFirstImport()`, while
+the page waits. **Import all (N)** queues the same imports for a cron instead (see "Import all"
+below). Either way, each import goes through `runFirstImport()`:
 
 - **Re-check first:** the place is looked up again for that one record. If it has been imported since
   the page loaded (another tab, Import all, a survey), or its fields have values now, nothing runs
@@ -165,12 +186,35 @@ Each place is also checked for the values its `[placeholders]` need, using the i
 - **The import:** `Import::importMappedData()` with the place's plan (`importUnitPlan()`: for a
   repeating instrument, only that instrument's fields). It reads stored data as the project's cache
   settings allow, as a survey submission's import would, rather than bypassing the cache.
-- **Audit trail:** logged like any run, as `API import: manual import by <username>`, so it joins the
-  run list. A failure there is flagged and can be retried or dismissed like any other.
+- **Audit trail:** logged like any run, as `API import: manual import by <username>` (or, from
+  Import all, `API import: import all, requested by <username>`), so it joins the run list. A failure
+  there is flagged and can be retried or dismissed like any other.
 - **Who:** the same users who can retry, re-checked server-side. Double clicks are refused by the
   same 60-second lock as retries.
-- The table lists the first 200 places; Import all covers every importable one. Imports run one at a
-  time, so the page has to stay open until Import all finishes.
+- **Not ready:** a place whose lookup values still can't be read is refused (`not_ready`) rather than
+  imported, so it can't produce a failed run.
+- The table lists the first 200 places; Import all covers every importable one, listed or not.
+
+### Import all
+
+**Import all (N)** works the same way as Retry all failed (`classes/ImportAll.php`):
+
+- **Queued, not run in the page:** the button saves a job, the project setting `import-all-job`, listing
+  every importable place at that moment. It's limited to the user's data access group, or to the
+  filtered record when the record filter is set. The cron `adif_import_all` (every minute, up to 50
+  seconds a run) works through it in the background, so the page can be left. It isn't held to the
+  bulk refresh's off-peak hours.
+- **Rate-limited:** each import waits for its turn under the server-wide `adif-imports-per-minute`
+  limit, shared with the queue, Retry all and the refresh (see "The server-wide import limit"). When
+  several projects have a job going, the cron takes turns between them.
+- **Re-checked:** each place goes through `runFirstImport()` at its turn. Places imported since the job
+  was queued (a survey, the row's own button), whose fields have values now, or whose lookup values are
+  still missing are counted as skipped, not imported.
+- **Progress and cancelling:** the Never imported card shows the job's progress (imported, needing
+  attention, skipped, failed) and a **Cancel** button. It shows the last job's summary for a day after.
+  One job runs per project at a time. Starting, cancelling and finishing are written to the module log
+  (`ADIF import all requested / cancelled / done`).
+- **Who:** the same users who can retry (Edit or above).
 
 ## Background imports
 
@@ -194,7 +238,8 @@ failed the same way.
   so simultaneous submissions can't overwrite each other's place in the queue. None of these messages
   starts with `API import`, so they're never read as runs.
 - **The cron:** works through every enabled project's queue, oldest first, for up to four minutes
-  per run; the next run carries on from there. It sets `$_GET['pid']` to each project in turn, as the
+  per run, within the server-wide limit on background imports (see
+  [below](#the-server-wide-import-limit)); the next run carries on from there. It sets `$_GET['pid']` to each project in turn, as the
   framework documents for crons, since settings are read for the current project. Code on the import
   path reads event names and the record ID field from `\Project` rather than `REDCap::isLongitudinal()`
   / `getRecordIdField()` / `getEventNames()`, which only work on a project's own pages. The API cache
@@ -230,10 +275,9 @@ lookup values aren't in the record (no address yet) is counted as skipped, not r
 - **Running:** never during the request. The cron (`adif_import_refresh`, every minute) does nothing
   outside the off-peak hours in the module's system settings (`adif-refresh-start-hour`,
   `adif-refresh-end-hour`, server time; default 22:00 to 06:00; the same hour for both means any
-  time). Inside them it works on one project for up to 50 seconds, starting an import at most every
-  60 / `adif-refresh-per-minute` seconds (default 20 a minute, server-wide), so the load is spread evenly
-  rather than in bursts. Projects with a refresh going take turns, one per cron run. It stops at the end
-  of the window and carries on the next night.
+  time). Inside them it works on one project for up to 50 seconds, within the server-wide limit on
+  background imports (see [below](#the-server-wide-import-limit)). Projects with a refresh going take
+  turns, one per cron run. It stops at the end of the window and carries on the next night.
 - **State:** two project settings. `import-refresh-records` lists the records to work through, taken
   when the refresh was requested (records created later are imported by their own surveys);
   `import-refresh-job` holds the status (`waiting`, `running`, `done`, `cancelled`, `failed`) and
@@ -244,6 +288,28 @@ lookup values aren't in the record (no address yet) is counted as skipped, not r
   as "ADIF bulk refresh requested / cancelled / done / failed" (not read as runs). A large refresh
   fills the run list, which shows the latest 500 runs, and the project's Logging page.
 
+## The server-wide import limit
+
+One system setting, `adif-imports-per-minute` (default 20, at most 300), caps how many imports ADIF's
+background jobs start a minute across the whole server, together: the survey import queue, Refresh all
+records, Retry all failed and Import all (`classes/ImportRateLimit.php`). However many of those crons are running
+at once, and for however many projects, their imports are spaced evenly at 60 / limit seconds apart.
+Imports a user starts with a single click (one retry, one first import) and imports run while a
+respondent waits (`import-immediately`) aren't counted. `adif-refresh-per-minute`, the setting's
+earlier name, is still read when the new one is blank.
+
+- **How:** a shared timetable. Before each import a job reserves the next free start time, one interval
+  after the last one any process reserved, and sleeps until it. The next free time is the system
+  setting `import-next-slot`, read straight from `redcap_external_module_settings` (not a per-request
+  cache) and updated under a MySQL named lock (`GET_LOCK('adif-import-slots')`), so two crons can't
+  take the same time. Without the lock it carries on, best effort.
+- **Deadlines:** a job asks for a time before its own deadline (the end of its cron run's time
+  budget). If the next free time is later, it reserves nothing and stops, and its next cron run carries
+  on. A reservation more than two minutes ahead (a clock change, a raised limit) is dropped.
+- **Sharing:** jobs get times in the order they ask, so a busy refresh and the survey queue interleave
+  rather than one waiting for the other to finish. A burst of survey submissions is worked through at
+  the limit's pace too, so set it with your busiest survey periods in mind.
+
 ## Files
 
 - `classes/ImportStatus.php` - the trait: `importRuns()`, `importRecordStatus()`,
@@ -251,6 +317,11 @@ lookup values aren't in the record (no address yet) is counted as skipped, not r
   `importRetryTargets()`, `importNeverAttempted()`, `runFirstImport()`, `importOutcomeLabel()`
 - `classes/ImportQueue.php` - the background queue: `queueImport()`, `importQueuePending()`,
   `processImportQueue()` (the cron), `processProjectImportQueue()`
+- `classes/ImportRateLimit.php` - the server-wide limit: `importsPerMinute()`, `awaitImportSlot()`
+- `classes/ImportRetryAll.php` - Retry all failed: `startRetryAll()`, `cancelRetryAll()`,
+  `processRetryAllJobs()` (the cron)
+- `classes/ImportAll.php` - Import all under Never imported: `startImportAll()`, `cancelImportAll()`,
+  `processImportAllJobs()` (the cron)
 - `classes/ImportRefresh.php` - the bulk refresh: `startImportRefresh()`, `cancelImportRefresh()`,
   `importRefreshWindow()`, `processImportRefreshJobs()` (the cron)
 - `classes/Import.php` - `importPlan()`, the mapping rules shared by imports and the retry check

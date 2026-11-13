@@ -29,6 +29,10 @@ are shown only to Design users who aren't in a group.
 - **Import Status actions** (`retry-import`, `dismiss-import`, `import-unattempted`,
   `run-import-queue` in `ADIF::redcap_module_ajax`): Edit or above, and a record in the user's group.
   `js/imports.js`, which draws the buttons, is loaded only for those users.
+- **Retry all failed** (`pages/Imports.php`, see `classes/ImportRetryAll.php`): Edit or above; it
+  queues only the runs the user can see.
+- **Import all** under Never imported (`pages/Imports.php`, see `classes/ImportAll.php`): Edit or above;
+  it queues only the places in records the user can see.
 - **Refresh all records** (`pages/Imports.php`, see `classes/ImportRefresh.php`): Design only; a user
   in a data access group refreshes only their group's records.
 - **Data Sources:** the tabs process posts only for Design users; others get the forms disabled.
