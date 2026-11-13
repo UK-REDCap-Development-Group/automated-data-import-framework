@@ -3,8 +3,12 @@
 namespace UKModules\ADIF;
 
 // Mixed into UKModules\ADIF\ADIF. Removes what ADIF keeps for a project once the project is deleted.
-// REDCap has no hook for project deletion, so an hourly cron (cleanUpDeletedProjects, see "crons"
-// in config.json) looks for projects ADIF holds anything for that have been deleted:
+// REDCap has no hook for project deletion, so a scheduled cleanup (removeDeletedProjectData) looks
+// for projects ADIF holds anything for that have been deleted. It runs on the schedule an
+// administrator sets in ADIF's system settings - weekly on Thursdays at 2 AM server time by default,
+// or daily, or never (see projectCleanupDueSince). REDCap fixes a module cron's timing in
+// config.json, so the cron itself (cleanUpDeletedProjects) only checks hourly whether a run is due;
+// a run missed while REDCap's cron was down happens at the next check. It looks for:
 //
 //   Deleted (redcap_projects.date_deleted is set; an administrator can still restore it):
 //     - its cached API responses (project- and record-scoped entries in adif_api_cache) are removed.
@@ -23,11 +27,19 @@ namespace UKModules\ADIF;
 //
 // A permanently deleted project's settings may be gone by the time the cron runs, and with them the
 // list of its tables' files. So each project's table files are also kept in a system setting
-// ($tableEdocRegistryKey), updated whenever its tables change and refreshed by every cron run.
+// ($tableEdocRegistryKey), updated whenever its tables change and refreshed by every cleanup.
 trait ProjectCleanup
 {
     // System setting: [project_id => [edoc ids]] of each project's uploaded tables
     private static $tableEdocRegistryKey = 'adif-table-edocs';
+
+    // System setting: when the cleanup last ran (unix time)
+    private static $cleanupLastRunKey = 'adif-cleanup-last-run';
+
+    // The schedule's defaults, used while its system settings are blank: weekly, Thursday, 2 AM
+    private static $cleanupDefaultFrequency = 'weekly';
+    private static $cleanupDefaultWeekday = 4;   // as date('w'): 0 is Sunday
+    private static $cleanupDefaultHour = 2;
 
     private static $projectDataRemovedMessage = 'ADIF data removed for a deleted project';
 
@@ -50,8 +62,67 @@ trait ProjectCleanup
         }
     }
 
-    // The cron. Returns a one-line summary for the cron log.
+    // The cron, run hourly (see "crons" in config.json): runs the cleanup when the administrator's
+    // schedule says it's due and it hasn't run since. The first check after the schedule is set up
+    // only notes the time, so the first cleanup happens at the next scheduled time rather than
+    // whenever the module happened to be enabled. Returns a one-line summary for the cron log.
     public function cleanUpDeletedProjects($cronInfo = [])
+    {
+        $now = time();
+        $dueSince = $this->projectCleanupDueSince($now);
+        if ($dueSince === null) {
+            return 'ADIF cleanup: turned off in ADIF\'s system settings.';
+        }
+
+        $lastRun = (int) $this->getSystemSetting(self::$cleanupLastRunKey);
+        if ($lastRun === 0) {
+            $this->setSystemSetting(self::$cleanupLastRunKey, $now);
+            return 'ADIF cleanup: scheduled; it first runs at the next scheduled time.';
+        }
+        if ($lastRun >= $dueSince) {
+            return 'ADIF cleanup: not due until the next scheduled time.';
+        }
+
+        // Noted before running, so a long run can't be started again by the next check
+        $this->setSystemSetting(self::$cleanupLastRunKey, $now);
+        return $this->removeDeletedProjectData();
+    }
+
+    // The latest scheduled cleanup time at or before $now (server time), from the administrator's
+    // settings: adif-cleanup-frequency ('weekly', 'daily' or 'off'), adif-cleanup-weekday (0-6,
+    // Sunday first) and adif-cleanup-hour (0-23); blank settings take the defaults above. Null when
+    // the cleanup is turned off.
+    public function projectCleanupDueSince($now)
+    {
+        $frequency = (string) $this->getSystemSetting('adif-cleanup-frequency');
+        if (!in_array($frequency, ['weekly', 'daily', 'off'], true)) {
+            $frequency = self::$cleanupDefaultFrequency;
+        }
+        if ($frequency === 'off') {
+            return null;
+        }
+        $hour = $this->getSystemSetting('adif-cleanup-hour');
+        $hour = is_numeric($hour) && (int) $hour >= 0 && (int) $hour <= 23 ? (int) $hour : self::$cleanupDefaultHour;
+        $weekday = $this->getSystemSetting('adif-cleanup-weekday');
+        $weekday = is_numeric($weekday) && (int) $weekday >= 0 && (int) $weekday <= 6 ? (int) $weekday : self::$cleanupDefaultWeekday;
+
+        // Today at the hour, or yesterday's if that's still ahead; then back to the weekday. Stepping
+        // a calendar day at a time keeps the hour across daylight saving changes.
+        $due = mktime($hour, 0, 0, (int) date('n', $now), (int) date('j', $now), (int) date('Y', $now));
+        if ($due > $now) {
+            $due = strtotime('-1 day', $due);
+        }
+        if ($frequency === 'weekly') {
+            while ((int) date('w', $due) !== $weekday) {
+                $due = strtotime('-1 day', $due);
+            }
+        }
+
+        return $due;
+    }
+
+    // The cleanup itself (see the top of this file). Returns a one-line summary.
+    public function removeDeletedProjectData()
     {
         $moduleId = $this->adifModuleId();
         if ($moduleId === null) {

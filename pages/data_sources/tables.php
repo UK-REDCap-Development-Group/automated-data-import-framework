@@ -12,13 +12,18 @@ if (!defined('ADIF_DATA_SOURCES_PAGE')) {
     exit;   // only ever included by pages/DataSources.php, which checks the user's rights first
 }
 
+// $canManage (set by pages/DataSources.php): whether this user can change tables. Without it the tab is
+// view-only: each table's details, settings (disabled) and preview, but no upload, test, replace or delete.
+
 $error = null;
 $success = null;
 $notices = [];
 $focusTable = null;   // the table an action was taken on, scrolled to and opened after the page loads
 $testResult = null;   // ['table' => id, 'value' => ..., 'result' => queryDataTable() result]
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$canManage) {
+    $error = 'Only users with Project Design rights can change data sources.';
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['adif_action'] ?? '');
     $tableId = (string) ($_POST['table_id'] ?? '');
 
@@ -78,6 +83,8 @@ $projectLimitBytes = $module->dataTableProjectLimitBytes();
 $storedBytes = $module->dataTableStoredBytes();
 $spaceLeftBytes = $module->dataTableSpaceLeftBytes();
 $uploadFull = $spaceLeftBytes === 0;
+// Tables and cached API responses share the project's allowance (see adif_ds_storage_bar)
+$storage = $module->projectStorageUsage();
 $delimiterNames = [',' => 'comma', "\t" => 'tab', ';' => 'semicolon', '|' => 'pipe'];
 
 // A small HTML table of rows, columns in file order
@@ -114,6 +121,7 @@ function adif_rows_table($columns, $rows, $highlight = null)
         <div class="adif-alert adif-alert-empty"><?= adif_h($notice) ?></div>
     <?php endforeach; ?>
 
+    <?php if ($canManage): ?>
     <form method="post" action="<?= adif_h(adif_ds_url($module, 'tables')) ?>" enctype="multipart/form-data" class="adif-dt-card adif-dt-upload">
         <?= adif_ds_form_fields($csrf, 'tables') ?>
         <input type="hidden" name="adif_action" value="upload">
@@ -129,25 +137,18 @@ function adif_rows_table($columns, $rows, $highlight = null)
             </div>
             <button type="submit" class="btn btn-primaryrc"<?= $uploadFull ? ' disabled' : '' ?>>Upload</button>
         </div>
-        <?php $usedShare = $projectLimitBytes > 0 ? min(1, $storedBytes / $projectLimitBytes) : 1; ?>
-        <div class="adif-dt-usage<?= $usedShare >= 0.9 ? ' is-near-full' : '' ?>">
-            <div class="adif-dt-usage-bar" aria-hidden="true"><span style="width: <?= round($usedShare * 100, 1) ?>%"></span></div>
-            <p>
-                <?php if ($uploadFull): ?>
-                    This project's tables use all <?= adif_h(adif_bytes($projectLimitBytes)) ?> of the storage it's allowed
-                    (<?= adif_h(adif_bytes($storedBytes)) ?> in use). Delete or replace a table that's no longer needed to
-                    upload another, or ask a REDCap administrator to raise the limit.
-                <?php else: ?>
-                    This project's tables use <?= adif_h(adif_bytes($storedBytes)) ?> of the
-                    <?= adif_h(adif_bytes($projectLimitBytes)) ?> they're allowed, leaving <?= adif_h(adif_bytes($spaceLeftBytes)) ?>.
-                    Each file can be up to <?= adif_h(adif_bytes($fileLimitBytes)) ?>.
-                <?php endif; ?>
-            </p>
-        </div>
+        <?= adif_ds_storage_bar($storage, $uploadFull
+            ? 'Delete or replace a table that\'s no longer needed, clear cached responses on the <a href="'
+                . adif_h(adif_ds_url($module, 'apis')) . '">API connections</a> tab, or ask a REDCap administrator to'
+                . ' raise the limit.'
+            : 'Each file can be up to ' . adif_h(adif_bytes($fileLimitBytes)) . '.') ?>
         <p class="adif-dt-hint">The first row must name the columns. Comma, tab, semicolon and pipe separated files are
             all read. For an Excel workbook, save the sheet as CSV first. The name can't be changed later, since
             mapped fields are matched by it.</p>
     </form>
+    <?php else: ?>
+        <?= adif_ds_storage_bar($storage) ?>
+    <?php endif; ?>
 
     <?php if (empty($tables)): ?>
         <div class="adif-alert adif-alert-empty">No tables have been uploaded to this project yet.</div>
@@ -193,10 +194,15 @@ function adif_rows_table($columns, $rows, $highlight = null)
                 <?php endif; ?>
             </p>
 
+            <?php if ($canManage): ?>
             <form method="post" action="<?= adif_h(adif_ds_url($module, 'tables')) ?>" class="adif-dt-settings">
                 <?= adif_ds_form_fields($csrf, 'tables') ?>
                 <input type="hidden" name="adif_action" value="settings">
                 <input type="hidden" name="table_id" value="<?= adif_h($id) ?>">
+            <?php else: ?>
+            <form class="adif-dt-settings adif-ds-readonly" onsubmit="return false;">
+                <fieldset disabled class="adif-ds-readonly-fields">
+            <?php endif; ?>
                 <div class="adif-form-row">
                     <div class="adif-form-field">
                         <label for="adif-key-<?= adif_h($id) ?>">Look rows up by column</label>
@@ -240,7 +246,11 @@ function adif_rows_table($columns, $rows, $highlight = null)
                             <?= adif_h($table['measure_column']) ?>: <?= adif_h(implode(', ', array_slice($table['measure_values'], 0, 12))) ?><?= count($table['measure_values']) > 12 ? ', …' : '' ?></p>
                     <?php endif; ?>
                 </fieldset>
-                <button type="submit" class="btn btn-primaryrc btn-sm">Save settings</button>
+                <?php if ($canManage): ?>
+                    <button type="submit" class="btn btn-primaryrc btn-sm">Save settings</button>
+                <?php else: ?>
+                </fieldset>
+                <?php endif; ?>
             </form>
 
             <details class="adif-dt-details" <?= ($isFocus && $testResult === null && $error === null) ? 'open' : '' ?>>
@@ -252,6 +262,7 @@ function adif_rows_table($columns, $rows, $highlight = null)
                 <?php endif; ?>
             </details>
 
+            <?php if ($canManage): ?>
             <details class="adif-dt-details" <?= ($testResult !== null && $testResult['table'] === $id) ? 'open' : '' ?>>
                 <summary>Test a lookup</summary>
                 <form method="post" action="<?= adif_h(adif_ds_url($module, 'tables')) ?>" class="adif-form-row">
@@ -301,6 +312,7 @@ function adif_rows_table($columns, $rows, $highlight = null)
                     <button type="submit" class="btn btn-danger btn-sm">Delete table</button>
                 </form>
             </details>
+            <?php endif; ?>
         </section>
     <?php endforeach; ?>
 

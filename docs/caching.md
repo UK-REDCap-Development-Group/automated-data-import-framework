@@ -127,9 +127,27 @@ ADIF doesn't block outbound requests: a source that isn't cached simply calls it
 
 ## When a project is deleted
 
-REDCap has no hook for project deletion, so an hourly cron, `adif_deleted_project_cleanup`
-(`ProjectCleanup::cleanUpDeletedProjects()`), finds projects that ADIF holds data for and that have
-been deleted:
+REDCap has no hook for project deletion, so a scheduled cleanup
+(`ProjectCleanup::removeDeletedProjectData()`) finds projects that ADIF holds data for and that have
+been deleted.
+
+**When it runs** is up to the REDCap administrator, in ADIF's system settings (Control Center):
+
+| Setting | Choices | Default (blank) |
+|---|---|---|
+| `adif-cleanup-frequency` | Weekly, Daily, or Never | Weekly |
+| `adif-cleanup-weekday` | Sunday to Saturday (used when weekly) | Thursday |
+| `adif-cleanup-hour` | 12 AM to 11 PM, server time | 2 AM |
+
+REDCap fixes a module cron's timing in `config.json`, so the cron, `adif_deleted_project_cleanup`
+(`cleanUpDeletedProjects()`), only checks once an hour whether a scheduled run is due
+(`projectCleanupDueSince()`) and hasn't happened yet (`adif-cleanup-last-run`). The cleanup starts
+within the scheduled hour, or at the next check if REDCap's cron was down then. The first check
+after the schedule is set up only notes the time, so the first cleanup waits for the next scheduled
+time rather than running whenever the module was enabled. With **Never**, deleted projects' data
+stays until an administrator removes it.
+
+What it removes:
 
 - **Deleted** (an administrator can still restore it): its cached API responses go - every
   `project:<pid>` and `record:<pid>:*` entry (`StorageBackend::purgeProjectData()`). They can hold
@@ -156,7 +174,10 @@ one system-level module log entry, `ADIF data removed for a deleted project`, wi
   `branchingLogic` inside `sub_settings` shows/hides the max-age field.
 - **"Refresh now" button** on the record or Mapping page, calling
   `fetchApiJson(..., FetchMode::Live)`.
-- **Cache admin page**: size, age, purge per source/project.
+- **Cache admin page** for administrators, across projects. Per project, the Data Sources page's API
+  tab already shows each source's cached size and age and can clear a source's responses. The cache
+  shares the project's storage allowance with uploaded tables (see `docs/data_sources.md`, "Storage
+  and cached responses").
 - **Record deletion**: `purgeRecord()` exists but no hook calls it yet. Project-scoped entries
   aren't attributable to a single record. (A deleted project's entries are removed: see "When a
   project is deleted" above.)

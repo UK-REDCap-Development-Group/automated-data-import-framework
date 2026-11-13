@@ -72,7 +72,7 @@ button beside **Retry this import**, with an optional reason), so it stops being
   the user, the time and the reason, plus a line on the project's Logging page. The latest entry
   for a run decides. These messages deliberately don't start with `API import`, so they are never
   read as part of a run.
-- **Who can dismiss:** the same users who can retry (Project Design rights); the
+- **Who can dismiss:** the same users who can retry (see [permissions.md](permissions.md)); the
   `dismiss-import` AJAX action re-checks this server-side.
 - A later run for the same record and event (a new survey submission or a retry) supersedes a
   dismissed one in the record lookup, as it would any other run.
@@ -93,8 +93,9 @@ about the import engine is special-cased for retries.
   its notices name the ones that weren't retried. The import then runs exactly the plan that was
   checked. A run that doesn't record which fields it left empty (the import threw) is retried as long
   as any mapping applies to its event and instrument.
-- **Who can retry:** users with Project Design rights (the same rule as configuring the module's
-  sources), since a retry writes record data. The AJAX action re-checks this server-side.
+- **Who can retry:** users with View & Edit rights on every instrument with ADIF mappings, or Project
+  Design rights, since a retry writes record data; a user in a data access group only for their group's
+  records. The AJAX action re-checks both server-side. See [permissions.md](permissions.md).
 - **Stored data:** by default a retry passes `FetchMode::Live` to the cache, so every request calls
   the API and overwrites what's stored - the right default after an outage. Unchecking **Skip
   stored data and call the APIs** reuses cached responses where they exist (e.g. for a retry of a
@@ -166,7 +167,7 @@ Each place is also checked for the values its `[placeholders]` need, using the i
   settings allow, as a survey submission's import would, rather than bypassing the cache.
 - **Audit trail:** logged like any run, as `API import: manual import by <username>`, so it joins the
   run list. A failure there is flagged and can be retried or dismissed like any other.
-- **Who:** users with Project Design rights, re-checked server-side. Double clicks are refused by the
+- **Who:** the same users who can retry, re-checked server-side. Double clicks are refused by the
   same 60-second lock as retries.
 - The table lists the first 200 places; Import all covers every importable one. Imports run one at a
   time, so the page has to stay open until Import all finishes.
@@ -207,10 +208,41 @@ failed the same way.
 - **On the Imports page:** a *Queued* card lists pending imports with their age, any partial
   attempts, and when the cron last ran (`import-queue-last-run`, a system setting). When the oldest
   has waited more than 10 minutes, the page says REDCap's cron may not be running. **Run queued imports
-  now** (`run-import-queue`, Project Design rights) works through the project's queue in short
+  now** (`run-import-queue`, the same users who can retry) works through the project's queue in short
   batches without waiting for the cron. The per-import lock it shares with the cron stops the same
   import from running twice at once. Queued imports are left off the *Never imported* list, which
   would otherwise show them in the minute before they run.
+
+## Refresh all records
+
+Re-runs the import for every record, so mapped fields hold what the APIs say now: after a new data
+release, say, or a change to the mappings. Each place an import writes to that has data in the record
+(an event; each instance of a repeating event or of a mapped repeating instrument, as for *Never
+imported*) is imported again, and the values the APIs return replace what's there. A place whose
+lookup values aren't in the record (no address yet) is counted as skipped, not run.
+
+- **Requesting:** the *Refresh all records* card on this page; Project Design rights only, since it
+  rewrites every record's mapped fields. The page posts to itself and redirects back
+  (`?refresh=<outcome>`), so reloading doesn't post again. **Skip stored data and call the APIs** (on
+  by default) passes `FetchMode::Live`, as a retry does. A user in a data access group refreshes only
+  their group's records. One refresh per project at a time; it can be cancelled from the card, and the
+  imports it already ran stay.
+- **Running:** never during the request. The cron (`adif_import_refresh`, every minute) does nothing
+  outside the off-peak hours in the module's system settings (`adif-refresh-start-hour`,
+  `adif-refresh-end-hour`, server time; default 22:00 to 06:00; the same hour for both means any
+  time). Inside them it works on one project for up to 50 seconds, starting an import at most every
+  60 / `adif-refresh-per-minute` seconds (default 20 a minute, server-wide), so the load is spread evenly
+  rather than in bursts. Projects with a refresh going take turns, one per cron run. It stops at the end
+  of the window and carries on the next night.
+- **State:** two project settings. `import-refresh-records` lists the records to work through, taken
+  when the refresh was requested (records created later are imported by their own surveys);
+  `import-refresh-job` holds the status (`waiting`, `running`, `done`, `cancelled`, `failed`) and
+  counts. Progress is saved after every record, re-reading the job first so a cancel from the page
+  wins. A cron run cut short loses at most one record's place, which is imported again.
+- **Logging:** each import is a run like any other, described as "API import: bulk refresh requested by
+  <user>", so failures are flagged and can be retried or dismissed here. The refresh itself is logged
+  as "ADIF bulk refresh requested / cancelled / done / failed" (not read as runs). A large refresh
+  fills the run list, which shows the latest 500 runs, and the project's Logging page.
 
 ## Files
 
@@ -219,6 +251,8 @@ failed the same way.
   `importRetryTargets()`, `importNeverAttempted()`, `runFirstImport()`, `importOutcomeLabel()`
 - `classes/ImportQueue.php` - the background queue: `queueImport()`, `importQueuePending()`,
   `processImportQueue()` (the cron), `processProjectImportQueue()`
+- `classes/ImportRefresh.php` - the bulk refresh: `startImportRefresh()`, `cancelImportRefresh()`,
+  `importRefreshWindow()`, `processImportRefreshJobs()` (the cron)
 - `classes/Import.php` - `importPlan()`, the mapping rules shared by imports and the retry check
 - `pages/Imports.php` - the page (linked from the project menu, see `config.json`)
 - `js/imports.js` - the retry, dismiss and import buttons' wiring (`module.ajax('retry-import', ...)`,

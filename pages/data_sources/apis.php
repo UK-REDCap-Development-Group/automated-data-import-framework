@@ -12,6 +12,9 @@ if (!defined('ADIF_DATA_SOURCES_PAGE')) {
     exit;   // only ever included by pages/DataSources.php, which checks the user's rights first
 }
 
+// $canManage (set by pages/DataSources.php): whether this user can change sources. Without it the tab
+// is view-only: no add form, test or reorder controls, every field disabled, URLs' keys masked.
+
 $error = null;
 $success = null;
 $notices = [];
@@ -21,7 +24,9 @@ $confirmBreaks = [];      // [index => [field => path]] mapped fields a save wou
 $testResults = [];        // [index => ApiSources::testApiSource() result]
 $testPaths = [];          // [index => the path last tested], to keep it in the test form
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$canManage) {
+    $error = 'Only users with Project Design rights can change data sources.';
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['adif_action'] ?? '');
     $rawIndex = (string) ($_POST['source_index'] ?? '');
     $index = $rawIndex === 'new' ? null : $rawIndex;
@@ -70,6 +75,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $testResults[(int) $index] = $module->testApiSource($index, $_POST['test_path'] ?? '', $expectedUrl);
                 break;
 
+            case 'api_clear_cache':
+                $removed = $module->clearApiSourceCache($index, $expectedUrl);
+                $success = $removed > 0
+                    ? "Cleared $removed cached response" . ($removed === 1 ? '' : 's') . ' for this source. Its next imports'
+                        . ' call the API again.'
+                    : 'Nothing was cached for this source.';
+                break;
+
+            case 'api_clear_orphan_cache':
+                $removed = $module->clearOrphanedApiCache((string) ($_POST['provider'] ?? ''));
+                $focus = null;
+                $success = "Cleared $removed cached response" . ($removed === 1 ? '' : 's') . ' left by a source that'
+                    . ' is no longer configured.';
+                break;
+
             default:
                 throw new \Exception('Unknown action.');
         }
@@ -84,6 +104,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $sources = $module->getApiSourceConfigs();
 $configs = $module->apiSourceSettingConfigs();
 $cachingOn = (bool) $module->getSystemSetting('adif-cache-enabled');
+
+// How much each source has cached (see ApiSources::apiCacheUsage), for the storage overview and
+// each source's card. A failure here only hides the figures; the rest of the tab still works.
+$cacheUsage = null;
+$cacheUsageError = null;
+try {
+    $cacheUsage = $module->apiCacheUsage();
+} catch (\Throwable $e) {
+    $cacheUsageError = $e->getMessage();
+}
 $tablesUrl = adif_ds_url($module, 'tables');
 
 // The sub-settings this tab lays out itself; any other sub-setting in config.json's "api-sources"
@@ -164,8 +194,24 @@ function adif_api_choice_name($configs, $key, $value)
     return (string) $value;
 }
 
+// "2026-10-01" or "2026-10-01 to 2026-11-12": when a source's cached responses were stored
+function adif_api_cache_dates($usage)
+{
+    $oldest = date('Y-m-d', $usage['oldest']);
+    $newest = date('Y-m-d', $usage['newest']);
+    return $oldest === $newest ? $oldest : "$oldest to $newest";
+}
+
+// "12 cached responses (1.2 MB)"
+function adif_api_cache_amount($entries, $bytes)
+{
+    return $entries . ' cached response' . ($entries === 1 ? '' : 's') . ' (' . adif_bytes($bytes) . ')';
+}
+
 // The form for one source ($source null: the add form). $form is the posted form being shown again.
-function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $breaks, $cachingOn)
+// $readOnly draws it for viewing only: every control disabled, nothing to submit, and the URL with any
+// key in it masked.
+function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $breaks, $cachingOn, $readOnly = false)
 {
     $isNew = $source === null;
     $idx = $isNew ? 'new' : (string) $source['index'];
@@ -176,6 +222,10 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
     $mode = adif_api_value($source, $form, 'cache-mode');
     ob_start();
     ?>
+    <?php if ($readOnly): ?>
+    <form class="adif-ds-source-form adif-ds-readonly" onsubmit="return false;">
+        <fieldset disabled class="adif-ds-readonly-fields">
+    <?php else: ?>
     <form method="post" action="<?= adif_h(adif_ds_url($module, 'apis')) ?>" class="adif-ds-source-form" data-index="<?= adif_h($idx) ?>"
           data-mapped="<?= $mappedCount ?>" data-original-url="<?= adif_h($isNew ? '' : $source['url']) ?>">
         <?= adif_ds_form_fields($csrf, 'apis') ?>
@@ -184,6 +234,7 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
         <?php if (!$isNew): ?>
             <input type="hidden" name="source_url" value="<?= adif_h($source['url']) ?>">
         <?php endif; ?>
+    <?php endif; ?>
 
         <?php if (!empty($breaks)): ?>
             <div class="adif-alert adif-alert-error" role="alert">
@@ -204,7 +255,8 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             <div class="adif-form-field adif-ds-wide">
                 <label for="<?= $p ?>url">URL</label>
                 <input type="text" inputmode="url" name="s[api]" id="<?= $p ?>url" required class="adif-ds-url"
-                       value="<?= adif_h(adif_api_value($source, $form, 'api')) ?>"
+                       value="<?= adif_h($readOnly ? \UKModules\ADIF\ADIF::maskApiUrl((string) adif_api_value($source, $form, 'api'))
+                           : adif_api_value($source, $form, 'api')) ?>"
                        placeholder="https://data.cdc.gov/resource/cwsq-ngmh.json">
                 <p class="adif-dt-hint">The API's base address. Each field's path is added to the end of it.</p>
                 <?php if ($mappedCount > 0): ?>
@@ -216,7 +268,9 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
 
             <div class="adif-form-field adif-ds-wide adif-ds-key">
                 <span class="adif-ds-label">API key</span>
-                <?php if (!$isNew && $source['has_key']): ?>
+                <?php if ($readOnly): ?>
+                    <p class="adif-dt-hint"><?= $source['has_key'] ? 'A key is saved for this source.' : 'No key is saved for this source.' ?></p>
+                <?php elseif (!$isNew && $source['has_key']): ?>
                     <div class="adif-ds-key-choice">
                         <label class="adif-dt-check"><input type="radio" name="api_key_action" value="keep" <?= $keyAction === 'keep' ? 'checked' : '' ?>> Keep the saved key</label>
                         <label class="adif-dt-check"><input type="radio" name="api_key_action" value="replace" <?= $keyAction === 'replace' ? 'checked' : '' ?>> Replace it</label>
@@ -232,8 +286,10 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                     <input type="password" name="api_key" id="<?= $p ?>key" autocomplete="new-password" aria-label="API key"
                            placeholder="Only if this API needs one">
                 <?php endif; ?>
-                <p class="adif-dt-hint">Sent as <code>Authorization: Bearer &lt;key&gt;</code>. It's stored with the
-                    project's module settings and never shown again once saved.</p>
+                <?php if (!$readOnly): ?>
+                    <p class="adif-dt-hint">Sent as <code>Authorization: Bearer &lt;key&gt;</code>. It's stored with the
+                        project's module settings and never shown again once saved.</p>
+                <?php endif; ?>
             </div>
         </fieldset>
 
@@ -250,8 +306,10 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             <div class="adif-form-field adif-ds-wide">
                 <div class="adif-ds-schema-head">
                     <label for="<?= $p ?>schema">Schema</label>
-                    <button type="button" class="btn btn-defaultrc btn-xs adif-ds-detect"
-                            title="Read the fields this API offers from the API itself, and fill them in below">Detect schema</button>
+                    <?php if (!$readOnly): ?>
+                        <button type="button" class="btn btn-defaultrc btn-xs adif-ds-detect"
+                                title="Read the fields this API offers from the API itself, and fill them in below">Detect schema</button>
+                    <?php endif; ?>
                 </div>
                 <textarea name="s[schema]" id="<?= $p ?>schema" rows="8" class="adif-ds-schema" spellcheck="false"><?= adif_h(adif_api_value($source, $form, 'schema')) ?></textarea>
                 <div class="adif-ds-detect-status" aria-live="polite"></div>
@@ -309,7 +367,13 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                 project, under one-way hashed keys.</p>
         </fieldset>
 
-        <?php $otherKeys = array_diff(array_keys($configs), $knownKeys); ?>
+        <?php
+        $otherKeys = array_diff(array_keys($configs), $knownKeys);
+        if ($readOnly) {
+            // A secret-like setting is drawn as a text box with its value, so it isn't shown to viewers
+            $otherKeys = array_filter($otherKeys, fn($key) => ($configs[$key]['type'] ?? '') !== 'password');
+        }
+        ?>
         <?php if (!empty($otherKeys)): ?>
             <fieldset class="adif-ds-section">
                 <legend>Other settings</legend>
@@ -321,9 +385,13 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             </fieldset>
         <?php endif; ?>
 
-        <div class="adif-ds-actions">
-            <button type="submit" class="btn btn-primaryrc btn-sm"><?= $isNew ? 'Add source' : 'Save' ?></button>
-        </div>
+        <?php if ($readOnly): ?>
+        </fieldset>
+        <?php else: ?>
+            <div class="adif-ds-actions">
+                <button type="submit" class="btn btn-primaryrc btn-sm"><?= $isNew ? 'Add source' : 'Save' ?></button>
+            </div>
+        <?php endif; ?>
     </form>
     <?php
     return ob_get_clean();
@@ -344,14 +412,51 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
     <div class="adif-alert adif-alert-empty"><?= adif_h($notice) ?></div>
 <?php endforeach; ?>
 
-<details class="adif-dt-card adif-ds-source adif-ds-new" id="adif-source-new" <?= empty($sources) || $focus === 'new' ? 'open' : '' ?>>
-    <summary><h4>Add an API source</h4></summary>
-    <?= adif_api_form($module, $configs, $knownKeys, $csrf, null, $posted['new'] ?? null, [], $cachingOn) ?>
-</details>
+<section class="adif-dt-card adif-ds-storage" aria-labelledby="adif-ds-storage-title">
+    <h4 id="adif-ds-storage-title">Storage</h4>
+    <?= adif_ds_storage_bar($module->projectStorageUsage(), 'Each source\'s cached responses are listed in its panel'
+        . ($canManage ? ', where they can be cleared to free space' : '') . '.') ?>
+    <?php if ($cacheUsageError !== null): ?>
+        <div class="adif-alert adif-alert-error">The cache's storage couldn't be read: <?= adif_h($cacheUsageError) ?></div>
+    <?php else: ?>
+        <?php foreach ($cacheUsage['orphans'] as $provider => $usage): ?>
+            <div class="adif-ds-orphan">
+                <p><?= adif_h(adif_api_cache_amount($usage['entries'], $usage['bytes'])) ?> were left by a source that's no
+                    longer configured (deleted, or its URL changed). Nothing uses them now.</p>
+                <?php if ($canManage): ?>
+                    <form method="post" action="<?= adif_h(adif_ds_url($module, 'apis')) ?>" class="adif-ds-clear-cache"
+                          onsubmit="return confirm(<?= adif_h(json_encode('Clear the ' . $usage['entries']
+                              . " cached response(s) left by a source that's no longer configured? This can't be undone.")) ?>);">
+                        <?= adif_ds_form_fields($csrf, 'apis') ?>
+                        <input type="hidden" name="adif_action" value="api_clear_orphan_cache">
+                        <input type="hidden" name="provider" value="<?= adif_h($provider) ?>">
+                        <button type="submit" class="btn btn-defaultrc btn-xs">Clear them</button>
+                    </form>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+        <?php if ($cacheUsage['shared']['entries'] > 0): ?>
+            <p class="adif-dt-hint">Another <?= adif_h(adif_api_cache_amount($cacheUsage['shared']['entries'], $cacheUsage['shared']['bytes'])) ?>
+                from public, keyless sources are shared with other projects on this server. They don't count towards this
+                project's storage and can't be cleared from one project.</p>
+        <?php endif; ?>
+        <?php if (!$cachingOn && $cacheUsage['total']['entries'] > 0): ?>
+            <p class="adif-dt-hint">Caching is turned off for this server, so nothing new is stored and the cached
+                responses aren't used until a REDCap administrator turns it back on.</p>
+        <?php endif; ?>
+    <?php endif; ?>
+</section>
+
+<?php if ($canManage): ?>
+    <details class="adif-dt-card adif-ds-source adif-ds-new" id="adif-source-new" <?= empty($sources) || $focus === 'new' ? 'open' : '' ?>>
+        <summary><h4>Add an API source</h4></summary>
+        <?= adif_api_form($module, $configs, $knownKeys, $csrf, null, $posted['new'] ?? null, [], $cachingOn) ?>
+    </details>
+<?php endif; ?>
 
 <?php if (empty($sources)): ?>
-    <div class="adif-alert adif-alert-empty">No API sources are configured yet. To use a CSV file instead, upload it on
-        the <a href="<?= adif_h($tablesUrl) ?>">Uploaded tables</a> tab.</div>
+    <div class="adif-alert adif-alert-empty">No API sources are configured yet.<?= $canManage
+        ? ' To use a CSV file instead, upload it on the <a href="' . adif_h($tablesUrl) . '">Uploaded tables</a> tab.' : '' ?></div>
 <?php endif; ?>
 
 <?php foreach ($sources as $position => $source): ?>
@@ -362,6 +467,8 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
     $mapped = $source['mapped'];
     $test = $testResults[$source['index']] ?? null;
     $cached = !empty($source['values']['cache-enabled']) && $source['values']['cache-enabled'] !== 'false';
+    $cacheStats = $cacheUsage['sources'][$source['index']] ?? null;
+    $cacheBytes = $cacheStats['bytes'] ?? 0;
     $probe = (string) ($source['values']['schema-probe'] ?? '');
     $testPath = $testPaths[$idx] ?? (preg_match('/\[[a-z][a-z0-9_]*\]/', $probe) ? '' : $probe);
     ?>
@@ -377,7 +484,11 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                 <?php endif; ?>
                 <span class="adif-status-pill <?= count($mapped) > 0 ? 'adif-status-ok' : 'adif-status-none' ?>"><?= count($mapped) ?> mapped</span>
                 <?php if ($source['has_key']): ?><span class="adif-status-pill adif-status-none">Key saved</span><?php endif; ?>
-                <?php if ($cached): ?><span class="adif-status-pill adif-status-stale">Cached</span><?php endif; ?>
+                <?php if ($cached || $cacheBytes > 0): ?>
+                    <span class="adif-status-pill <?= $cached ? 'adif-status-stale' : 'adif-status-none' ?>"
+                          title="<?= $cached ? 'Caching is on for this source' : 'Caching is off for this source, but responses stored earlier remain' ?>"><?= $cached
+                        ? 'Cached' : 'Not caching' ?><?= $cacheBytes > 0 ? ' &middot; ' . adif_h(adif_bytes($cacheBytes)) : '' ?></span>
+                <?php endif; ?>
             </span>
         </summary>
 
@@ -399,8 +510,48 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             </div>
         <?php endif; ?>
 
-        <?= adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $confirmBreaks[$source['index']] ?? [], $cachingOn) ?>
+        <?php if ($cacheStats !== null && ($cached || $cacheStats['entries'] > 0 || $cacheStats['shared_entries'] > 0)): ?>
+            <div class="adif-ds-cache-usage">
+                <p><strong>Cached:</strong>
+                    <?= $cacheStats['entries'] > 0
+                        ? adif_h(adif_api_cache_amount($cacheStats['entries'], $cacheStats['bytes'])) . ', stored '
+                            . adif_h(adif_api_cache_dates($cacheStats)) . '.'
+                        : 'nothing yet for this project.' ?>
+                    <?php if (!empty($cacheStats['same_url'])): ?>
+                        Source<?= count($cacheStats['same_url']) === 1 ? '' : 's' ?>
+                        <?= adif_h(implode(', ', array_map(fn($i) => $i + 1, $cacheStats['same_url']))) ?> ha<?= count($cacheStats['same_url']) === 1 ? 's' : 've' ?>
+                        the same URL and share<?= count($cacheStats['same_url']) === 1 ? 's' : '' ?> these<?= $canManage ? ', so clearing them clears them there too' : '' ?>.
+                    <?php endif; ?>
+                    <?php if ($cacheStats['shared_entries'] > 0): ?>
+                        Another <?= adif_h(adif_api_cache_amount($cacheStats['shared_entries'], $cacheStats['shared_bytes'])) ?>
+                        are shared with other projects, and stay.
+                    <?php endif; ?>
+                </p>
+                <?php if ($canManage && $cacheStats['entries'] > 0): ?>
+                    <?php
+                    $clearMessage = 'Clear the ' . $cacheStats['entries'] . ' cached response(s) for source ' . ($position + 1)
+                        . ' (' . \UKModules\ADIF\ADIF::maskApiUrl($source['url']) . ')?'
+                        . "\n\nIts next imports call the API again instead of reusing them. This can't be undone.";
+                    if (!empty($cacheStats['same_url'])) {
+                        $clearMessage .= "\n\nSource(s) " . implode(', ', array_map(fn($i) => $i + 1, $cacheStats['same_url']))
+                            . ' use the same URL and lose them too.';
+                    }
+                    ?>
+                    <form method="post" action="<?= adif_h(adif_ds_url($module, 'apis')) ?>" class="adif-ds-clear-cache"
+                          onsubmit="return confirm(<?= adif_h(json_encode($clearMessage)) ?>);">
+                        <?= adif_ds_form_fields($csrf, 'apis') ?>
+                        <input type="hidden" name="adif_action" value="api_clear_cache">
+                        <input type="hidden" name="source_index" value="<?= adif_h($idx) ?>">
+                        <input type="hidden" name="source_url" value="<?= adif_h($source['url']) ?>">
+                        <button type="submit" class="btn btn-defaultrc btn-sm">Clear cached responses</button>
+                    </form>
+                <?php endif; ?>
+            </div>
+        <?php endif; ?>
 
+        <?= adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $confirmBreaks[$source['index']] ?? [], $cachingOn, !$canManage) ?>
+
+        <?php if ($canManage): ?>
         <details class="adif-dt-details" <?= $test !== null ? 'open' : '' ?>>
             <summary>Test connection</summary>
             <form method="post" action="<?= adif_h(adif_ds_url($module, 'apis')) ?>" class="adif-form-row">
@@ -467,6 +618,7 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             <p class="adif-dt-hint">Order only matters when two sources offer the same field path to a mapping saved
                 without an endpoint: the first one is used.</p>
         </details>
+        <?php endif; ?>
     </details>
 <?php endforeach; ?>
 

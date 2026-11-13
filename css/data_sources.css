@@ -315,3 +315,53 @@
 .adif-ds-page [hidden] {
     display: none !important;
 }
+
+/* View-only forms for users without Project Design rights (see pages/data_sources/): the disabled
+   fieldset that turns off every control shouldn't add a box of its own */
+.adif-ds-readonly-fields {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+}
+
+/* The API tab's storage card (the bar itself is adif_ds_storage_bar, styled in data_tables.css) */
+.adif-ds-storage h4 {
+    margin: 0 0 8px;
+}
+
+.adif-ds-clear-cache {
+    display: inline-block;
+    margin: 0;
+}
+
+/* A source's own cached responses, above its form */
+.adif-ds-cache-usage {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    margin: 0 0 10px;
+    font-size: 0.88em;
+    color: #445;
+}
+
+.adif-ds-cache-usage p {
+    margin: 0;
+    flex: 1 1 320px;
+}
+
+/* Cached responses left by a source that's no longer configured, under the storage bar */
+.adif-ds-orphan {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    margin-top: 8px;
+    font-size: 0.88em;
+    color: #445;
+}
+
+.adif-ds-orphan p {
+    margin: 0;
+}

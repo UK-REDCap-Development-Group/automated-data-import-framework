@@ -351,11 +351,63 @@ trait ImportStatus
             return [];
         }
         $dictionary = REDCap::getDataDictionary($projectId, 'array');
+
+        $places = $this->importPlacesWithData($projectId, $project, $shapes, $dictionary,
+            $record === null ? null : [(string) $record]);
+        if (empty($places)) {
+            return [];
+        }
+
+        $attempted = $this->importAttemptedFields($projectId, $project, $dictionary, $record);
+        // An import waiting in the background queue (see ImportQueue) is about to run, so its event
+        // isn't listed: the queue card shows it instead
+        $queued = [];
+        foreach ($this->importQueuePending($projectId, $record, 5000) as $item) {
+            $queued[$item['record']][(int) $item['event_id']] = true;
+        }
+
+        $units = [];
+        foreach ($places as $place) {
+            $name = $place['record'];
+            $shape = $place['shape'];
+            $instance = $place['instance'];
+            if (!self::importFieldsEmpty($place['row'], $shape['fields'], $dictionary)
+                || self::importUnitAttempted($attempted, $name, $shape, $instance)
+                || isset($queued[$name][$shape['event_id']])) {
+                continue;
+            }
+
+            [$missing, $importable] = $this->importUnitLookupCheck($place['rows'], $name, $shape, $instance, $dictionary);
+            $units[] = [
+                'record' => $name,
+                'event_id' => $shape['event_id'],
+                'event_name' => $this->importEventName($projectId, $shape['event_id']),
+                'instrument' => $shape['instrument'],
+                'repeat_instance' => $instance,
+                'repeats' => $shape['repeats'],
+                'fields' => $shape['fields'],
+                'missing' => $missing,
+                'importable' => $importable,
+            ];
+        }
+
+        return $units;
+    }
+
+    // Every place an import writes to (one of importUnitShapes()' $shapes, at an instance) that holds
+    // data in a record, so the event has happened there: the places importNeverAttempted() picks from,
+    // and the ones a bulk refresh re-imports (see ImportRefresh). Reads everything the callers check
+    // in one getData() call: the mapped fields, the fields their [placeholders] are looked up from, and
+    // the instruments' form status fields, which show which events and instances have data.
+    // $records limits it to those records (null: every record). Each place: record, shape, instance,
+    // row (its getData() row) and rows (all of the record's rows, for reading lookup values).
+    private function importPlacesWithData($projectId, $project, array $shapes, array $dictionary, $records = null)
+    {
+        if ($records !== null && empty($records)) {
+            return [];   // getData() would read every record
+        }
         $recordIdField = $project->table_pk;
 
-        // Everything the check reads, in one getData() call: the mapped fields, the fields their
-        // [placeholders] are looked up from, and the instruments' form status fields, which show which
-        // events and instances the record has data in
         $fields = [$recordIdField];
         foreach ($shapes as $shape) {
             array_push($fields, ...$shape['fields'], ...$shape['status_fields']);
@@ -368,12 +420,12 @@ trait ImportStatus
             fn($field) => isset($dictionary[$field]) || in_array($field, $statusFields, true))));
 
         $request = ['project_id' => $projectId, 'return_format' => 'json', 'fields' => $fields];
-        if ($record !== null) {
-            $request['records'] = [(string) $record];
+        if ($records !== null) {
+            $request['records'] = array_values(array_map('strval', $records));
         }
         $data = json_decode(REDCap::getData($request), true);
         if (!is_array($data)) {
-            throw new \Exception('ADIF couldn\'t read the project\'s records to look for imports that never ran.');
+            throw new \Exception('ADIF couldn\'t read the project\'s records to find where imports write.');
         }
 
         $rowsByRecord = [];
@@ -383,20 +435,9 @@ trait ImportStatus
                 $rowsByRecord[$name][] = $row;
             }
         }
-        if (empty($rowsByRecord)) {
-            return [];
-        }
 
         $eventIds = $project->longitudinal ? array_flip($project->getUniqueEventNames()) : [];
-        $attempted = $this->importAttemptedFields($projectId, $project, $dictionary, $record);
-        // An import waiting in the background queue (see ImportQueue) is about to run, so its event
-        // isn't listed: the queue card shows it instead
-        $queued = [];
-        foreach ($this->importQueuePending($projectId, $record, 5000) as $item) {
-            $queued[$item['record']][(int) $item['event_id']] = true;
-        }
-
-        $units = [];
+        $places = [];
         foreach ($rowsByRecord as $name => $rows) {
             $name = (string) $name;   // numeric record names come back as integer keys
             foreach ($shapes as $shape) {
@@ -423,32 +464,22 @@ trait ImportStatus
                     } elseif ($rowInstance !== '') {
                         continue;
                     }
-                    $instance = $rowInstance === '' ? 1 : max(1, (int) $rowInstance);
-
-                    if (!self::importRowHasData($row, $recordIdField)
-                        || !self::importFieldsEmpty($row, $shape['fields'], $dictionary)
-                        || self::importUnitAttempted($attempted, $name, $shape, $instance)
-                        || isset($queued[$name][$shape['event_id']])) {
+                    if (!self::importRowHasData($row, $recordIdField)) {
                         continue;
                     }
 
-                    [$missing, $importable] = $this->importUnitLookupCheck($rows, $name, $shape, $instance, $dictionary);
-                    $units[] = [
+                    $places[] = [
                         'record' => $name,
-                        'event_id' => $shape['event_id'],
-                        'event_name' => $this->importEventName($projectId, $shape['event_id']),
-                        'instrument' => $shape['instrument'],
-                        'repeat_instance' => $instance,
-                        'repeats' => $shape['repeats'],
-                        'fields' => $shape['fields'],
-                        'missing' => $missing,
-                        'importable' => $importable,
+                        'shape' => $shape,
+                        'instance' => $rowInstance === '' ? 1 : max(1, (int) $rowInstance),
+                        'row' => $row,
+                        'rows' => $rows,
                     ];
                 }
             }
         }
 
-        return $units;
+        return $places;
     }
 
     // Where a project's imports write to, per event: the event's own mapped fields (instrument null;

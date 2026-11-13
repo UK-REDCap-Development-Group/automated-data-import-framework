@@ -17,6 +17,10 @@ require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 const ADIF_DATA_SOURCES_PAGE = true;
 
 $pid = $module->getProjectId();
+$module->requireModuleView($pid);
+// Users with Project Design rights edit the sources; everyone else who can see ADIF gets the same tabs
+// without their forms' controls or actions (see classes/Access.php). Each tab checks $canManage
+// again before acting on a post.
 $canManage = $module->canConfigureApiSources($pid);
 
 $tabs = ['apis' => 'API connections', 'tables' => 'Uploaded tables'];
@@ -48,16 +52,47 @@ function adif_ds_form_fields($csrf, $tab)
         . '<input type="hidden" name="adif_tab" value="' . adif_h($tab) . '">';
 }
 
+// The project's storage bar, shown on both tabs: uploaded tables and cached API responses share one
+// allowance (adif-table-max-project-mb; see DataTables::projectStorageUsage), drawn as one bar with a
+// segment for each. $usage is projectStorageUsage()'s result; $after is extra text for the end of
+// its line, as HTML.
+function adif_ds_storage_bar($usage, $after = '')
+{
+    $limit = max(1, $usage['limit']);
+    $share = min(1, $usage['used'] / $limit);
+    $tablesWidth = round(min(1, $usage['tables'] / $limit) * 100, 1);
+    $cacheWidth = round(min(1 - $tablesWidth / 100, $usage['cache'] / $limit) * 100, 1);
+    ob_start();
+    ?>
+    <div class="adif-dt-usage<?= $share >= 0.9 ? ' is-near-full' : '' ?>">
+        <div class="adif-dt-usage-bar" aria-hidden="true"><span style="width: <?= $tablesWidth ?>%"></span><span
+                class="adif-dt-usage-cache" style="width: <?= $cacheWidth ?>%"></span></div>
+        <p>
+            <?php if ($usage['left'] === 0): ?>
+                This project uses all <?= adif_h(adif_bytes($usage['limit'])) ?> of the storage it's allowed
+                (<?= adif_h(adif_bytes($usage['used'])) ?> in use), so no more tables can be uploaded.
+            <?php else: ?>
+                This project uses <?= adif_h(adif_bytes($usage['used'])) ?> of the <?= adif_h(adif_bytes($usage['limit'])) ?>
+                of storage it's allowed, leaving <?= adif_h(adif_bytes($usage['left'])) ?>.
+            <?php endif; ?>
+            <span class="adif-dt-usage-key"><span class="adif-dt-usage-swatch" aria-hidden="true"></span>Uploaded tables
+                <?= adif_h(adif_bytes($usage['tables'])) ?></span>
+            <span class="adif-dt-usage-key"><span class="adif-dt-usage-swatch adif-dt-usage-cache" aria-hidden="true"></span>Cached
+                API responses <?= adif_h(adif_bytes($usage['cache'])) ?></span>
+            <?= $after ?>
+        </p>
+    </div>
+    <?php
+    return ob_get_clean();
+}
+
 $csrf = $module->getCSRFToken();
 
 // The tab is rendered first, since it handles its own form post: the counts in the tab links
 // below then include what was just added or deleted
-$panel = '';
-if ($canManage) {
-    ob_start();
-    require __DIR__ . '/data_sources/' . $tab . '.php';
-    $panel = ob_get_clean();
-}
+ob_start();
+require __DIR__ . '/data_sources/' . $tab . '.php';
+$panel = ob_get_clean();
 $sourceCount = count($module->getApiSources());
 $tableCount = count($module->getDataTables());
 ?>
@@ -84,10 +119,10 @@ $tableCount = count($module->getDataTables());
 
     <div class="adif-ds-panel" role="tabpanel">
         <?php if (!$canManage): ?>
-            <div class="adif-alert adif-alert-empty">Only users with Project Design rights can manage data sources.</div>
-        <?php else: ?>
-            <?= $panel ?>
+            <div class="adif-alert adif-alert-empty">You can view this project's data sources. Only users with Project
+                Design rights can change them.</div>
         <?php endif; ?>
+        <?= $panel ?>
     </div>
 </div>
 

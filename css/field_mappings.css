@@ -508,3 +508,24 @@
     color: #5A6270;
     font-size: 12px;
 }
+
+/* View-only Mapping page, for users without Project Design rights (see pages/Mapping.php): the
+   pickers show their choice but can't be opened */
+.adif-picker-trigger.is-readonly {
+    cursor: default;
+    background: #F6F7F9;
+    color: inherit;
+    opacity: 1;
+}
+
+.adif-picker-trigger.is-readonly:hover {
+    border-color: #C9CED6;
+}
+
+.adif-readonly-note {
+    margin: 10px 0;
+    padding: 10px 14px;
+    border: 1px solid #C9CED6;
+    border-radius: 6px;
+    background: #F6F7F9;
+}

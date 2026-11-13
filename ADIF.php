@@ -14,8 +14,10 @@ require_once __DIR__ . '/classes/ApiCache.php';
 require_once __DIR__ . '/classes/ImportLog.php';
 require_once __DIR__ . '/classes/ImportStatus.php';
 require_once __DIR__ . '/classes/ImportQueue.php';
+require_once __DIR__ . '/classes/ImportRefresh.php';
 require_once __DIR__ . '/classes/ProjectCleanup.php';
 require_once __DIR__ . '/classes/ApiSources.php';
+require_once __DIR__ . '/classes/Access.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -27,8 +29,16 @@ class ADIF extends AbstractExternalModule
     use ImportLog;
     use ImportStatus;
     use ImportQueue;
+    use ImportRefresh;
     use ProjectCleanup;
     use ApiSources;
+    use Access;
+
+    // What a user can do with ADIF in a project (see classes/Access.php); each level includes the ones below
+    const ACCESS_NONE = 0;     // no ADIF pages or menu links
+    const ACCESS_READ = 1;     // see every page, change nothing
+    const ACCESS_EDIT = 2;     // also resolve errors on the Import Status page
+    const ACCESS_DESIGN = 3;   // also change data sources, mappings and the module's settings
 
     // provided courtesy of Scott J. Pearson
     private static function isExternalModulePage()
@@ -88,24 +98,17 @@ class ADIF extends AbstractExternalModule
             || (bool) preg_match("/ExternalModules\/index\.php$/", $page);
     }
 
-    // Users who may change the module's configuration, and so the API sources it calls and the
-    // tables uploaded on the Data Sources page
-    public function canConfigureApiSources($project_id)
-    {
-        $user = $this->getUser();
-        return $user && ($user->isSuperUser() || $user->hasDesignRights($project_id));
-    }
-
     // Guards the Mapping page's AJAX scripts (scripts/*.php), which aren't menu links, so the framework
     // runs neither its link permission check nor any rights check before them. Returns the project id
     // for the request, or ends it with a JSON error:
     //   - the project is the one in the URL (?pid=), which REDCap checked the user can access before
     //     running the script; a pid sent in the request body must be that same project, so a request
     //     can't be pointed at another project's settings
-    //   - the user must be allowed to configure the module there (Project Design rights, or a super
-    //     user - see canConfigureApiSources), the same rule as the Mapping page and Data Sources page
+    //   - the user must have at least $minimum access there (see classes/Access.php): reading the
+    //     mappings is open to anyone who can see the Mapping page, saving them needs Project Design
+    //     rights (or a super user), the same rule as the Data Sources page
     // Checked on every request, so revoking a user's rights takes effect immediately.
-    public function requireMappingAccess()
+    public function requireMappingAccess($minimum = self::ACCESS_DESIGN)
     {
         $fail = function ($status, $message) {
             http_response_code($status);
@@ -123,13 +126,10 @@ class ADIF extends AbstractExternalModule
             $fail(403, 'This request was sent for a different project than the page it came from. Reload the page.');
         }
 
-        try {
-            $allowed = $this->canConfigureApiSources($pid);
-        } catch (\Throwable $e) {
-            $allowed = false;   // getUser() throws when nobody is logged in
-        }
-        if (!$allowed) {
-            $fail(403, 'Only users with Project Design rights in this project can change its ADIF mappings.');
+        if ($this->accessLevel($pid) < $minimum) {
+            $fail(403, $minimum >= self::ACCESS_DESIGN
+                ? 'Only users with Project Design rights in this project can change its ADIF mappings.'
+                : 'You don\'t have access to ADIF in this project.');
         }
 
         return $pid;
@@ -147,19 +147,43 @@ class ADIF extends AbstractExternalModule
             $this->includeJS('js/schema_detect.js');
         }
 
-        // Gives the Imports page its retry buttons (see pages/Imports.php and js/imports.js)
-        if ($project_id && self::isModulePage() && $this->canConfigureApiSources($project_id)) {
+        // Gives the Imports page its retry buttons (see pages/Imports.php and js/imports.js), for the
+        // users who can resolve import errors
+        if ($project_id && self::isModulePage() && $this->canResolveImports($project_id)) {
             $this->initializeJavascriptModuleObject();
             echo '<script>window.ADIFImports = { prefix: ' . json_encode($this->getPrefix())
                 . ', module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
             $this->includeJS('js/imports.js');
 
-            // The Data Sources page's Detect schema buttons and form behaviour (see js/data_sources.js);
-            // like imports.js, it does nothing on pages without its elements
-            echo '<script>window.ADIFDataSources = { module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
-            $this->includeJS('js/data_sources.js');
+            // The Data Sources page's Detect schema buttons and form behaviour (see js/data_sources.js),
+            // only for the users who can edit sources; like imports.js, it does nothing on pages without
+            // its elements
+            if ($this->canConfigureApiSources($project_id)) {
+                echo '<script>window.ADIFDataSources = { module: ' . $this->getJavascriptModuleObjectName() . ' };</script>';
+                $this->includeJS('js/data_sources.js');
+            }
         }
     }
+
+    // Which ADIF menu links a user sees. The framework also refuses a linked page's URL to users this
+    // returns null for, so it's the first check on every page: users with no ADIF access (see
+    // classes/Access.php) get none of them. The API Test page is listed only while the project's
+    // "show-api-test-page" setting is ticked.
+    function redcap_module_link_check_display($project_id, $link)
+    {
+        if (!$project_id || !$this->canViewModule($project_id)) {
+            return null;
+        }
+        if (stripos((string) ($link['url'] ?? ''), 'API_Test') !== false
+            && !$this->getProjectSetting('show-api-test-page', $project_id)) {
+            return null;
+        }
+        return $link;
+    }
+
+    private static $resolveImportsDenied = 'Resolving import errors needs View & Edit rights on every instrument with'
+        . ' ADIF mappings, or Project Design rights.';
+    private static $recordNotInGroup = 'That record isn\'t in your data access group.';
 
     // Requests from module.ajax() in the browser. Actions must also be listed under auth-ajax-actions in config.json.
     function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
@@ -181,9 +205,10 @@ class ADIF extends AbstractExternalModule
 
             case 'retry-import':
                 // Re-runs a logged import run that left mapped fields empty (see ImportStatus::retryImportRun).
-                // Writes record data, so it's limited to the same users who define what gets imported.
-                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
-                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can retry imports.'];
+                // Writes record data, so it needs View & Edit rights on the mapped instruments (see
+                // classes/Access.php), and a record in the user's data access group.
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
                 }
                 if (!isset($payload['run_id']) || !is_string($payload['run_id']) || !preg_match('/^[0-9a-f]{12}$/', $payload['run_id'])) {
                     return ['status' => 'error', 'message' => 'The retry request is missing a valid run id.'];
@@ -196,6 +221,9 @@ class ADIF extends AbstractExternalModule
                 if (trim((string) $run['record']) === '') {
                     return ['status' => 'error', 'message' => 'That run has no record on it, so there is nothing to re-run it for.'];
                 }
+                if (!$this->canSeeRecord($project_id, $run['record'])) {
+                    return ['status' => 'error', 'message' => self::$recordNotInGroup];
+                }
 
                 return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
 
@@ -203,8 +231,8 @@ class ADIF extends AbstractExternalModule
                 // Runs the first import for a record listed under "Never imported" on the Imports page
                 // (see ImportStatus::runFirstImport), which re-checks that it's still pending. Writes record
                 // data, so it's limited to the same users who can retry imports.
-                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
-                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can run imports from here.'];
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
                 }
                 $record = $payload['record'] ?? null;
                 $eventId = $payload['event_id'] ?? null;
@@ -216,6 +244,9 @@ class ADIF extends AbstractExternalModule
                     || !is_numeric($instance) || (int) $instance < 1) {
                     return ['status' => 'error', 'message' => 'The import request is missing its record, event or instance.'];
                 }
+                if (!$this->canSeeRecord($project_id, $record)) {
+                    return ['status' => 'error', 'message' => self::$recordNotInGroup];
+                }
 
                 return $this->runFirstImport($project_id, (string) $record, (int) $eventId,
                     $instrument === '' ? null : $instrument, (int) $instance);
@@ -223,12 +254,14 @@ class ADIF extends AbstractExternalModule
             case 'run-import-queue':
                 // Runs this project's queued imports now, without waiting for the cron (see
                 // ImportQueue::processProjectImportQueue). A short batch per request, so the page can show
-                // progress and no request runs long; the page sends it again while imports remain.
-                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
-                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can run queued imports.'];
+                // progress and no request runs long; the page sends it again while imports remain. A user in
+                // a data access group runs only their group's records' imports.
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
                 }
                 try {
-                    return ['status' => 'success'] + $this->processProjectImportQueue($project_id, time() + 20, 25);
+                    return ['status' => 'success'] + $this->processProjectImportQueue($project_id, time() + 20, 25,
+                            $this->adifVisibleRecords($project_id));
                 } catch (\Throwable $e) {
                     return ['status' => 'error', 'message' => 'The queued imports couldn\'t be run: ' . $e->getMessage()];
                 }
@@ -236,8 +269,8 @@ class ADIF extends AbstractExternalModule
             case 'dismiss-import':
                 // Clears (or, with 'undo', restores) a run's "Needs attention" flag, for failures nobody
                 // intends to fix (see ImportStatus::dismissImportRun). Same users as retrying.
-                if (!$project_id || !$this->canConfigureApiSources($project_id)) {
-                    return ['status' => 'error', 'message' => 'Only users with Project Design rights can dismiss import errors.'];
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
                 }
                 if (!isset($payload['run_id']) || !is_string($payload['run_id']) || !preg_match('/^[0-9a-f]{12}$/', $payload['run_id'])) {
                     return ['status' => 'error', 'message' => 'The request is missing a valid run id.'];
@@ -246,6 +279,9 @@ class ADIF extends AbstractExternalModule
                 $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
                     return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                }
+                if (!$this->canSeeRecord($project_id, $run['record'])) {
+                    return ['status' => 'error', 'message' => self::$recordNotInGroup];
                 }
 
                 return $this->dismissImportRun($project_id, $run, !empty($payload['undo']),

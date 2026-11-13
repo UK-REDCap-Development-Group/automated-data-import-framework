@@ -177,3 +177,40 @@
 .adif-dt-usage.is-near-full .adif-dt-usage-bar span {
     background: #b3261e;
 }
+
+/* The storage bar's two segments (pages/DataSources.php, adif_ds_storage_bar): uploaded tables, then
+   cached API responses, which share the project's allowance */
+.adif-dt-usage-bar {
+    display: flex;
+}
+
+.adif-dt-usage-bar span.adif-dt-usage-cache,
+.adif-dt-usage-swatch.adif-dt-usage-cache {
+    background: #2f9e8f;
+}
+
+.adif-dt-usage.is-near-full .adif-dt-usage-bar span.adif-dt-usage-cache {
+    background: #d9776f;
+}
+
+.adif-dt-usage-key {
+    white-space: nowrap;
+    margin-right: 8px;
+}
+
+.adif-dt-usage-swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 4px;
+    border-radius: 2px;
+    background: #3e72a8;
+}
+
+.adif-dt-usage.is-near-full .adif-dt-usage-swatch {
+    background: #b3261e;
+}
+
+.adif-dt-usage.is-near-full .adif-dt-usage-swatch.adif-dt-usage-cache {
+    background: #d9776f;
+}

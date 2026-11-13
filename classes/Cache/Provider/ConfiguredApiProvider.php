@@ -45,7 +45,13 @@ final class ConfiguredApiProvider implements DataProvider
      */
     public function id(): string
     {
-        return 'src_' . substr(sha1(strtolower(rtrim($this->url, '/'))), 0, 12);
+        return self::idForUrl($this->url);
+    }
+
+    /** The provider id a source with this URL caches under, for finding its entries without building it */
+    public static function idForUrl(string $url): string
+    {
+        return 'src_' . substr(sha1(strtolower(rtrim($url, '/'))), 0, 12);
     }
 
     public function label(): string

@@ -59,6 +59,52 @@ final class InMemoryStorage implements StorageBackend
         return array_keys($ids);
     }
 
+    public function usageByProvider(int $projectId): array
+    {
+        return $this->usage(fn($ns) => $ns === "project:$projectId" || str_starts_with($ns, "record:$projectId:"));
+    }
+
+    public function sharedUsageByProvider(array $providerIds): array
+    {
+        return array_intersect_key($this->usage(fn($ns) => $ns === 'system'), array_flip($providerIds));
+    }
+
+    public function purgeProjectProvider(int $projectId, string $providerId): int
+    {
+        $removed = 0;
+        foreach ($this->data as $ns => $entries) {
+            if ($ns !== "project:$projectId" && !str_starts_with($ns, "record:$projectId:")) {
+                continue;
+            }
+            foreach ($entries as $key => $entry) {
+                if ($entry->providerId === $providerId) {
+                    unset($this->data[$ns][$key]);
+                    $removed++;
+                }
+            }
+        }
+        return $removed;
+    }
+
+    private function usage(callable $nsMatches): array
+    {
+        $out = [];
+        foreach ($this->data as $ns => $entries) {
+            if (!$nsMatches($ns)) {
+                continue;
+            }
+            foreach ($entries as $entry) {
+                $u = $out[$entry->providerId] ?? ['entries' => 0, 'bytes' => 0, 'oldest' => PHP_INT_MAX, 'newest' => 0];
+                $u['entries']++;
+                $u['bytes'] += strlen(json_encode($entry->toArray()));
+                $u['oldest'] = min($u['oldest'], $entry->retrievedAt);
+                $u['newest'] = max($u['newest'], $entry->retrievedAt);
+                $out[$entry->providerId] = $u;
+            }
+        }
+        return $out;
+    }
+
     /** Test helper. */
     public function dump(): array
     {

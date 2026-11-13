@@ -43,9 +43,378 @@
         },
         {
             "key": "adif-table-max-project-mb",
-            "name": "Most storage one project's data tables can use in total, in MB. Leave blank for the default of 32 MB. Lowering it doesn't remove tables already uploaded; it blocks new uploads until the project is back under the limit.",
+            "name": "Most storage one project can use in total, in MB: its uploaded data tables and its cached API responses together. Leave blank for the default of 32 MB. Reaching it only blocks new uploads (caching carries on); lowering it doesn't remove anything already stored.",
             "type": "text",
             "validation": "number"
+        },
+        {
+            "key": "adif-cleanup-frequency",
+            "name": "<b>Deleted projects:</b> how often ADIF removes what it kept for deleted projects: their cached API responses once a project is deleted, and their uploaded tables, ADIF settings and ADIF log entries once REDCap deletes it permanently. Leave blank for the default, weekly.",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "weekly",
+                    "name": "Weekly (default)"
+                },
+                {
+                    "value": "daily",
+                    "name": "Daily"
+                },
+                {
+                    "value": "off",
+                    "name": "Never: leave it for an administrator to remove"
+                }
+            ]
+        },
+        {
+            "key": "adif-cleanup-weekday",
+            "name": "Day it runs on, when weekly. Leave blank for the default, Thursday.",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "Sunday"
+                },
+                {
+                    "value": "1",
+                    "name": "Monday"
+                },
+                {
+                    "value": "2",
+                    "name": "Tuesday"
+                },
+                {
+                    "value": "3",
+                    "name": "Wednesday"
+                },
+                {
+                    "value": "4",
+                    "name": "Thursday (default)"
+                },
+                {
+                    "value": "5",
+                    "name": "Friday"
+                },
+                {
+                    "value": "6",
+                    "name": "Saturday"
+                }
+            ]
+        },
+        {
+            "key": "adif-cleanup-hour",
+            "name": "Hour it runs at, in the server's time zone. It starts within the hour, when REDCap's cron next runs ADIF's cleanup check. Leave blank for the default, 2 AM.",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "12 AM"
+                },
+                {
+                    "value": "1",
+                    "name": "1 AM"
+                },
+                {
+                    "value": "2",
+                    "name": "2 AM (default)"
+                },
+                {
+                    "value": "3",
+                    "name": "3 AM"
+                },
+                {
+                    "value": "4",
+                    "name": "4 AM"
+                },
+                {
+                    "value": "5",
+                    "name": "5 AM"
+                },
+                {
+                    "value": "6",
+                    "name": "6 AM"
+                },
+                {
+                    "value": "7",
+                    "name": "7 AM"
+                },
+                {
+                    "value": "8",
+                    "name": "8 AM"
+                },
+                {
+                    "value": "9",
+                    "name": "9 AM"
+                },
+                {
+                    "value": "10",
+                    "name": "10 AM"
+                },
+                {
+                    "value": "11",
+                    "name": "11 AM"
+                },
+                {
+                    "value": "12",
+                    "name": "12 PM"
+                },
+                {
+                    "value": "13",
+                    "name": "1 PM"
+                },
+                {
+                    "value": "14",
+                    "name": "2 PM"
+                },
+                {
+                    "value": "15",
+                    "name": "3 PM"
+                },
+                {
+                    "value": "16",
+                    "name": "4 PM"
+                },
+                {
+                    "value": "17",
+                    "name": "5 PM"
+                },
+                {
+                    "value": "18",
+                    "name": "6 PM"
+                },
+                {
+                    "value": "19",
+                    "name": "7 PM"
+                },
+                {
+                    "value": "20",
+                    "name": "8 PM"
+                },
+                {
+                    "value": "21",
+                    "name": "9 PM"
+                },
+                {
+                    "value": "22",
+                    "name": "10 PM"
+                },
+                {
+                    "value": "23",
+                    "name": "11 PM"
+                }
+            ]
+        },
+        {
+            "key": "adif-refresh-start-hour",
+            "name": "<b>Bulk refresh:</b> a refresh of every record's imports, requested on a project's Import Status page, runs only during off-peak hours. They start at (server time; leave blank for 22:00)",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "00:00"
+                },
+                {
+                    "value": "1",
+                    "name": "01:00"
+                },
+                {
+                    "value": "2",
+                    "name": "02:00"
+                },
+                {
+                    "value": "3",
+                    "name": "03:00"
+                },
+                {
+                    "value": "4",
+                    "name": "04:00"
+                },
+                {
+                    "value": "5",
+                    "name": "05:00"
+                },
+                {
+                    "value": "6",
+                    "name": "06:00"
+                },
+                {
+                    "value": "7",
+                    "name": "07:00"
+                },
+                {
+                    "value": "8",
+                    "name": "08:00"
+                },
+                {
+                    "value": "9",
+                    "name": "09:00"
+                },
+                {
+                    "value": "10",
+                    "name": "10:00"
+                },
+                {
+                    "value": "11",
+                    "name": "11:00"
+                },
+                {
+                    "value": "12",
+                    "name": "12:00"
+                },
+                {
+                    "value": "13",
+                    "name": "13:00"
+                },
+                {
+                    "value": "14",
+                    "name": "14:00"
+                },
+                {
+                    "value": "15",
+                    "name": "15:00"
+                },
+                {
+                    "value": "16",
+                    "name": "16:00"
+                },
+                {
+                    "value": "17",
+                    "name": "17:00"
+                },
+                {
+                    "value": "18",
+                    "name": "18:00"
+                },
+                {
+                    "value": "19",
+                    "name": "19:00"
+                },
+                {
+                    "value": "20",
+                    "name": "20:00"
+                },
+                {
+                    "value": "21",
+                    "name": "21:00"
+                },
+                {
+                    "value": "22",
+                    "name": "22:00"
+                },
+                {
+                    "value": "23",
+                    "name": "23:00"
+                }
+            ]
+        },
+        {
+            "key": "adif-refresh-end-hour",
+            "name": "Off-peak hours end at (server time; leave blank for 06:00). Choose the same hour as the start to let refreshes run at any time.",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "00:00"
+                },
+                {
+                    "value": "1",
+                    "name": "01:00"
+                },
+                {
+                    "value": "2",
+                    "name": "02:00"
+                },
+                {
+                    "value": "3",
+                    "name": "03:00"
+                },
+                {
+                    "value": "4",
+                    "name": "04:00"
+                },
+                {
+                    "value": "5",
+                    "name": "05:00"
+                },
+                {
+                    "value": "6",
+                    "name": "06:00"
+                },
+                {
+                    "value": "7",
+                    "name": "07:00"
+                },
+                {
+                    "value": "8",
+                    "name": "08:00"
+                },
+                {
+                    "value": "9",
+                    "name": "09:00"
+                },
+                {
+                    "value": "10",
+                    "name": "10:00"
+                },
+                {
+                    "value": "11",
+                    "name": "11:00"
+                },
+                {
+                    "value": "12",
+                    "name": "12:00"
+                },
+                {
+                    "value": "13",
+                    "name": "13:00"
+                },
+                {
+                    "value": "14",
+                    "name": "14:00"
+                },
+                {
+                    "value": "15",
+                    "name": "15:00"
+                },
+                {
+                    "value": "16",
+                    "name": "16:00"
+                },
+                {
+                    "value": "17",
+                    "name": "17:00"
+                },
+                {
+                    "value": "18",
+                    "name": "18:00"
+                },
+                {
+                    "value": "19",
+                    "name": "19:00"
+                },
+                {
+                    "value": "20",
+                    "name": "20:00"
+                },
+                {
+                    "value": "21",
+                    "name": "21:00"
+                },
+                {
+                    "value": "22",
+                    "name": "22:00"
+                },
+                {
+                    "value": "23",
+                    "name": "23:00"
+                }
+            ]
+        },
+        {
+            "key": "adif-refresh-per-minute",
+            "name": "Most imports bulk refreshes run per minute, across the whole server, spaced evenly through the minute. Leave blank for 20. Each import makes one request per API endpoint its record's mappings read from.",
+            "type": "text",
+            "validation": "integer"
         }
     ],
     "auth-ajax-actions": [
@@ -65,10 +434,17 @@
         },
         {
             "cron_name": "adif_deleted_project_cleanup",
-            "cron_description": "ADIF: removes deleted projects' cached API responses, and permanently deleted projects' uploaded tables and module data",
+            "cron_description": "ADIF: checks hourly whether the deleted-project cleanup is due (it runs on the schedule set in ADIF's system settings, weekly by default)",
             "method": "cleanUpDeletedProjects",
             "cron_frequency": "3600",
             "cron_max_run_time": "1800"
+        },
+        {
+            "cron_name": "adif_import_refresh",
+            "cron_description": "ADIF: works through the bulk import refreshes requested on projects' Import Status pages, during the off-peak hours set in the module's system settings",
+            "method": "processImportRefreshJobs",
+            "cron_frequency": "60",
+            "cron_max_run_time": "600"
         }
     ],
     "links": {

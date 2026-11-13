@@ -26,4 +26,24 @@ interface StorageBackend
 
     /** @return int[] the projects that have project- or record-scoped entries */
     public function projectIds(): array;
+
+    /**
+     * What one project has stored, by provider: its project-scoped entries and all its record-scoped
+     * ones, for the Data Sources page.
+     * @return array<string, array{entries: int, bytes: int, oldest: int, newest: int}>
+     */
+    public function usageByProvider(int $projectId): array;
+
+    /**
+     * The same for entries shared across projects ("system" scope), limited to the given providers.
+     * @param string[] $providerIds
+     * @return array<string, array{entries: int, bytes: int, oldest: int, newest: int}>
+     */
+    public function sharedUsageByProvider(array $providerIds): array;
+
+    /**
+     * Remove one provider's entries for one project (project- and record-scoped; shared entries stay).
+     * @return int how many entries were removed
+     */
+    public function purgeProjectProvider(int $projectId, string $providerId): int;
 }

@@ -8,6 +8,11 @@
 // Now you can safely render your page
 require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 
+$module->requireModuleView($module->getProjectId());
+// Requests use the sources' saved keys, so only users who can change the sources send them; everyone
+// else who can see ADIF gets the form view-only (see classes/Access.php)
+$canSend = $module->canConfigureApiSources($module->getProjectId());
+
 $sources = $module->getApiSources();
 // Uploaded tables are queried here too, as "table:<id>" sources (see classes/DataTables.php)
 $tables = $module->getDataTables();
@@ -23,7 +28,9 @@ $payloadRaw = isset($_POST['payload']) ? $_POST['payload'] : '';
 $result = null;
 $formError = null;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$canSend) {
+    $formError = 'Only users with Project Design rights can send test requests.';
+} elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $payload = [];
 
     if (trim($payloadRaw) !== '') {
@@ -100,15 +107,21 @@ function adif_flatten_headers($headers)
             <div class="adif-alert adif-alert-error"><?= htmlspecialchars($formError) ?></div>
         <?php endif; ?>
 
-        <form method="post">
+        <?php if (!$canSend): ?>
+            <div class="adif-alert adif-alert-empty">You can view this page. Only users with Project Design rights can
+                send test requests.</div>
+        <?php endif; ?>
+
+        <form method="post"<?= $canSend ? '' : ' onsubmit="return false;"' ?>>
             <input type="hidden" name="redcap_csrf_token" value="<?= htmlspecialchars($module->getCSRFToken()) ?>">
+            <fieldset<?= $canSend ? '' : ' disabled' ?> style="border: 0; margin: 0; padding: 0; min-width: 0;">
             <div class="adif-form-row">
                 <div class="adif-form-field">
                     <label for="adif-source">API Source</label>
                     <select name="source_index" id="adif-source">
                         <?php foreach ($sources as $source): ?>
                             <option value="<?= htmlspecialchars($source['index']) ?>" <?= ((string) $source['index'] === (string) $selectedIndex) ? 'selected' : '' ?>>
-                                <?= htmlspecialchars($source['url']) ?>
+                                <?= htmlspecialchars($canSend ? $source['url'] : \UKModules\ADIF\ADIF::maskApiUrl($source['url'])) ?>
                             </option>
                         <?php endforeach; ?>
                         <?php if (!empty($tables)): ?>
@@ -145,6 +158,7 @@ function adif_flatten_headers($headers)
                 </div>
             </div>
             <button type="submit" class="adif-submit btn btn-primaryrc">Send Request</button>
+            </fieldset>
         </form>
 
         <?php if ($result !== null): ?>

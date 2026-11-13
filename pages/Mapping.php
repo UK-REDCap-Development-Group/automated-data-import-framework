@@ -17,6 +17,11 @@ require_once "../../redcap_connect.php";
 // Now you can safely render your page
 require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 
+$module->requireModuleView($project_id);
+// Only users with Project Design rights change mappings; everyone else who can see ADIF gets the page
+// view-only (see classes/Access.php). scripts/save_*.php check the same rule on the server.
+$canEdit = $module->canConfigureApiSources($project_id);
+
 // Data dictionary grouped by instrument: { instrument_key: { field_name: field_info, ... } }
 $dictionary = [];
 foreach (\REDCap::getDataDictionary($project_id, 'array') as $fieldName => $fieldInfo) {
@@ -61,6 +66,8 @@ $projectTitle = \REDCap::getProjectTitle();
     const instruments = <?= json_encode($instruments) ?>;
     const dictionary = <?= json_encode($dictionary) ?>;
     const project_title = <?= json_encode($projectTitle) ?>;
+    // False for users who can view the mappings but not change them: no pickers, prompts or saves
+    const CAN_EDIT = <?= json_encode($canEdit) ?>;
 
     // Every field discovered across all configured API sources. Static for the life of the page
     // load - reconfigure a source's schema and reload to pick up changes.
@@ -414,6 +421,12 @@ $projectTitle = \REDCap::getProjectTitle();
         }
         select.after(trigger);
         renderPickerTrigger(trigger, select);
+
+        if (!CAN_EDIT) {
+            trigger.disabled = true;
+            trigger.classList.add('is-readonly');
+            return;
+        }
 
         trigger.addEventListener('click', () => openApiFieldPicker(select, trigger));
         trigger.addEventListener('keydown', event => {
@@ -791,8 +804,13 @@ $projectTitle = \REDCap::getProjectTitle();
 </script>
 
 <div class="d-flex container" style="flex-direction: column;">
+    <?php if (!$canEdit): ?>
+        <div class="adif-readonly-note" role="status">You can view this project's ADIF mappings. Only users with
+            Project Design rights can change them.</div>
+    <?php endif; ?>
     <!-- Manage and sync buttons -->
     <div class="row selection-btns">
+        <?php if ($canEdit): ?>
         <div class="col-md-3">
             <a id="manage-forms-btn">
                 <div class="center-home-sects">
@@ -809,6 +827,7 @@ $projectTitle = \REDCap::getProjectTitle();
                 </div>
             </a>
         </div>
+        <?php endif; ?>
         <div class="col-md-3">
             <a id="export-btn" class="center-home-sects">
                 <div class="center-home-sects">
@@ -1123,8 +1142,11 @@ $projectTitle = \REDCap::getProjectTitle();
         const container = document.getElementById('instruments_list');
         if (!container) return;
 
-        // This checks the saved mappings to ensure they match up with available forms and fields in the project
-        validity_check(existingMappings, dictionary, instruments);
+        // This checks the saved mappings to ensure they match up with available forms and fields in the project.
+        // Its fix-it dialog changes the mappings, so it's only for users who can.
+        if (CAN_EDIT) {
+            validity_check(existingMappings, dictionary, instruments);
+        }
 
         // Create a fragment to build the tables in memory
         const fragment = document.createDocumentFragment();
@@ -1229,6 +1251,7 @@ $projectTitle = \REDCap::getProjectTitle();
 
     // Save a snapshot of configurations whenever you want, currently runs on any change
     function checkpoint() {
+        if (!CAN_EDIT) return;
         console.log('checkpoint')
         const mapping = {};
 
@@ -1302,14 +1325,12 @@ $projectTitle = \REDCap::getProjectTitle();
                     return;
                 }
 
-                if (result.data.length === 0) {
+                if (result.data.length === 0 || mappings.length === 0) {
                     let list = document.getElementById('instruments_list');
-                    list.innerHTML = `<h2>You currently have not selected any Forms for mapping.</h2>
-                                      <h2>Select the "Manage Forms" option above to begin mapping your first Form.</h2>`;
-                } else if (mappings.length === 0) {
-                    let list = document.getElementById('instruments_list');
-                    list.innerHTML = `<h2>You currently have not selected any Forms for mapping.</h2>
-                                      <h2>Select the "Manage Forms" option above to begin mapping your first Form.</h2>`;
+                    list.innerHTML = CAN_EDIT
+                        ? `<h2>You currently have not selected any Forms for mapping.</h2>
+                           <h2>Select the "Manage Forms" option above to begin mapping your first Form.</h2>`
+                        : `<h2>No forms have been set up for mapping in this project yet.</h2>`;
                 } else {
                     mappings = result.data || {};
                     mappings = sortMappings(mappings, instruments);
@@ -1457,11 +1478,20 @@ $projectTitle = \REDCap::getProjectTitle();
         const lookups = selectedLookups(select);
         if (!lookups) return;
 
+        const missing = missingLookups(lookups);
+        if (!CAN_EDIT) {
+            const text = document.createElement('span');
+            text.textContent = missing.length
+                ? `Needs ${missing.map(p => `[${p}]`).join(', ')}: no lookup field is set`
+                : 'Looks up ' + lookups.placeholders.map(p => `[${p}] from ${lookupFieldFor(lookups.source, p)}`).join(', ');
+            status.appendChild(text);
+            return;
+        }
+
         const button = document.createElement('button');
         button.type = 'button';
         button.addEventListener('click', () => openLookupPrompt(select));
 
-        const missing = missingLookups(lookups);
         if (missing.length) {
             button.className = 'lookup-chip';
             button.textContent = `Needs ${missing.map(p => `[${p}]`).join(', ')} · Set lookup field`;
@@ -1497,6 +1527,7 @@ $projectTitle = \REDCap::getProjectTitle();
     // The prompt, in a full-width row under the mapping. One field choice per placeholder the
     // endpoint uses; ones already set show their current field, so the same prompt changes them.
     function openLookupPrompt(select) {
+        if (!CAN_EDIT) return;
         closeLookupPrompts();
         const lookups = selectedLookups(select);
         if (!lookups) return;
@@ -1592,6 +1623,7 @@ $projectTitle = \REDCap::getProjectTitle();
 
     // Saves every source's choices, as { "<source>": { "<placeholder>": "<field>" } }
     function saveLookupFields() {
+        if (!CAN_EDIT) return;
         $.ajax({
             url: "<?= $module->getUrl('scripts/save_lookups.php') ?>",
             method: "POST",
@@ -1613,7 +1645,9 @@ $projectTitle = \REDCap::getProjectTitle();
     document.addEventListener('DOMContentLoaded', () => {
         load_checkpoint();
 
-        document.getElementById('upload-btn').addEventListener('click', async () => {
+        // The rest sets up the controls that change mappings, which only editors have; Export Config
+        // (below) is for everyone
+        if (CAN_EDIT) document.getElementById('upload-btn').addEventListener('click', async () => {
             // Remove any existing modal first
             const existing = document.querySelector('.modal-overlay');
             if (existing) existing.remove();
@@ -1716,12 +1750,12 @@ $projectTitle = \REDCap::getProjectTitle();
             URL.revokeObjectURL(url);
         });
 
-        document.getElementById('manage-forms-btn').addEventListener('click', () => {
+        if (CAN_EDIT) document.getElementById('manage-forms-btn').addEventListener('click', () => {
             manageForms(instruments, displayed);
         });
 
         // When a user changes a field mapping dropdown
-        document.addEventListener('change', function (event) {
+        if (CAN_EDIT) document.addEventListener('change', function (event) {
             // select[name]: the mapping dropdowns, not a lookup prompt's
             if (event.target.matches('#instruments_list select[name]')) {
                 checkpoint();

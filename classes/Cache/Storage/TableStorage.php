@@ -97,6 +97,56 @@ final class TableStorage implements StorageBackend
         return $count;
     }
 
+    public function usageByProvider(int $projectId): array
+    {
+        return $this->usage(
+            'ns = ? OR ns LIKE ?',
+            ["project:$projectId", "record:$projectId:%"]
+        );
+    }
+
+    public function sharedUsageByProvider(array $providerIds): array
+    {
+        if (!$providerIds) {
+            return [];
+        }
+        $ph = implode(',', array_fill(0, count($providerIds), '?'));
+        return $this->usage("ns = 'system' AND provider IN ($ph)", array_values($providerIds));
+    }
+
+    public function purgeProjectProvider(int $projectId, string $providerId): int
+    {
+        $where  = '(ns = ? OR ns LIKE ?) AND provider = ?';
+        $params = ["project:$projectId", "record:$projectId:%", $providerId];
+        $row = ($this->query)("SELECT COUNT(*) AS n FROM {$this->table} WHERE $where", $params)->fetch_assoc();
+        $count = (int) ($row['n'] ?? 0);
+        if ($count > 0) {
+            ($this->query)("DELETE FROM {$this->table} WHERE $where", $params);
+        }
+        return $count;
+    }
+
+    /** Entry counts, stored size (the payload column, in bytes) and age range by provider */
+    private function usage(string $where, array $params): array
+    {
+        $res = ($this->query)(
+            "SELECT provider, COUNT(*) AS entries, SUM(LENGTH(payload)) AS bytes,"
+            . " MIN(retrieved_at) AS oldest, MAX(retrieved_at) AS newest"
+            . " FROM {$this->table} WHERE $where GROUP BY provider",
+            $params
+        );
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $out[(string) $row['provider']] = [
+                'entries' => (int) $row['entries'],
+                'bytes'   => (int) $row['bytes'],
+                'oldest'  => (int) $row['oldest'],
+                'newest'  => (int) $row['newest'],
+            ];
+        }
+        return $out;
+    }
+
     public function projectIds(): array
     {
         $res = ($this->query)(

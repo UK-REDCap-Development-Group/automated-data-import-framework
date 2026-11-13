@@ -189,12 +189,19 @@ trait ImportQueue
     // one import, and all of them are marked done with its run. Also called by the Imports page's
     // "Run queued imports now" button. Returns counts: ran, attention (ran but left fields empty),
     // abandoned, busy (being run elsewhere right now), remaining (still pending afterwards).
-    public function processProjectImportQueue($projectId, $deadline, $limit = 200)
+    // $records ([record => true]) limits it to those records' imports, for a user in a data access
+    // group (see Access::adifVisibleRecords); null runs every record's.
+    public function processProjectImportQueue($projectId, $deadline, $limit = 200, $records = null)
     {
         $counts = ['ran' => 0, 'attention' => 0, 'abandoned' => 0, 'busy' => 0, 'remaining' => 0];
+        $pending = function () use ($projectId, $records) {
+            $items = $this->importQueuePending($projectId, null, 1000);
+            return $records === null ? $items
+                : array_values(array_filter($items, fn($item) => isset($records[(string) $item['record']])));
+        };
 
         $groups = [];
-        foreach ($this->importQueuePending($projectId, null, 1000) as $item) {
+        foreach ($pending() as $item) {
             $groups[self::importQueueKey($item)][] = $item;
         }
 
@@ -219,7 +226,7 @@ trait ImportQueue
             }
         }
 
-        $counts['remaining'] = count($this->importQueuePending($projectId, null, 1000));
+        $counts['remaining'] = count($pending());
         return $counts;
     }
 

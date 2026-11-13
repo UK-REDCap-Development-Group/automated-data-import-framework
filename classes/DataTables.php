@@ -41,6 +41,9 @@ trait DataTables
     // File contents by edoc id, so an import touching a table several times reads it once
     private static $dataTableContents = [];
 
+    // This project's cached-response bytes, read once per request (see projectCacheStoredBytes)
+    private $projectCacheBytes = null;
+
     public function getDataTables()
     {
         $tables = $this->getProjectSetting('data-tables') ?: [];
@@ -111,7 +114,9 @@ trait DataTables
         return $this->dataTableLimitSetting('adif-table-max-file-mb', self::$defaultDataTableFileMb);
     }
 
-    // The most one project may keep across all its tables ("adif-table-max-project-mb"), else 32 MB
+    // The most one project may keep across its tables and cached API responses together
+    // ("adif-table-max-project-mb"), else 32 MB. Only uploads are refused once it's reached: caching
+    // carries on, and clearing cached responses frees space for tables.
     public function dataTableProjectLimitBytes()
     {
         return $this->dataTableLimitSetting('adif-table-max-project-mb', self::$defaultDataTableProjectMb);
@@ -137,31 +142,63 @@ trait DataTables
         return $total;
     }
 
-    // What's left of the project's allowance, never below zero. With $exceptId, what a new file
-    // for that table could use, since its current file stops counting once it's replaced.
-    public function dataTableSpaceLeftBytes($exceptId = null)
+    // Bytes of API responses cached for this project (its project- and record-scoped entries; ones
+    // shared across projects don't count). They share the project's allowance with its tables.
+    // 0 when the cache can't be read, so a cache problem never blocks an upload.
+    public function projectCacheStoredBytes()
     {
-        return max(0, $this->dataTableProjectLimitBytes() - $this->dataTableStoredBytes($exceptId));
+        if ($this->projectCacheBytes !== null) {
+            return $this->projectCacheBytes;
+        }
+        try {
+            $usage = $this->apiCacheStorage()->usageByProvider((int) $this->getProjectId());
+            $this->projectCacheBytes = (int) array_sum(array_column($usage, 'bytes'));
+        } catch (\Throwable $e) {
+            error_log('ADIF: couldn\'t read the cache\'s size: ' . $e->getMessage());
+            $this->projectCacheBytes = 0;
+        }
+        return $this->projectCacheBytes;
     }
 
-    // Stops a file that would take the project's tables past their total allowance. $replacing is
-    // the id of the table the file replaces.
+    // The project's storage, for the bar both Data Sources tabs show: limit, tables, cache (bytes
+    // each), used (tables + cache) and left (never below zero)
+    public function projectStorageUsage()
+    {
+        $limit = $this->dataTableProjectLimitBytes();
+        $tables = $this->dataTableStoredBytes();
+        $cache = $this->projectCacheStoredBytes();
+        return ['limit' => $limit, 'tables' => $tables, 'cache' => $cache, 'used' => $tables + $cache,
+            'left' => max(0, $limit - $tables - $cache)];
+    }
+
+    // What's left of the project's allowance for tables, never below zero: the limit less the tables
+    // and the cached responses. With $exceptId, what a new file for that table could use, since its
+    // current file stops counting once it's replaced.
+    public function dataTableSpaceLeftBytes($exceptId = null)
+    {
+        return max(0, $this->dataTableProjectLimitBytes() - $this->dataTableStoredBytes($exceptId)
+            - $this->projectCacheStoredBytes());
+    }
+
+    // Stops a file that would take the project past its storage allowance (tables and cached
+    // responses together). $replacing is the id of the table the file replaces.
     private function checkDataTableProjectLimit($bytes, $replacing = null)
     {
         $limit = $this->dataTableProjectLimitBytes();
-        $used = $this->dataTableStoredBytes($replacing);
+        $tables = $this->dataTableStoredBytes($replacing);
+        $cache = $this->projectCacheStoredBytes();
+        $used = $tables + $cache;
         if ($used + $bytes <= $limit) {
             return;
         }
 
         $size = fn($b) => $this->formatDataTableBytes($b);
         $left = $size(max(0, $limit - $used));
-        $inUse = $replacing === null
-            ? "{$size($used)} is already in use, leaving $left"
-            : "the project's other tables use {$size($used)}, leaving $left for this one";
-        throw new \Exception("This file ({$size($bytes)}) would take this project's data tables past their "
-            . "{$size($limit)} limit: $inUse. Delete or replace a table that's no longer needed, or ask a "
-            . 'REDCap administrator to raise the limit.');
+        $inUse = ($replacing === null ? "tables use {$size($tables)}" : "the project's other tables use {$size($tables)}")
+            . " and cached API responses {$size($cache)}, leaving $left" . ($replacing === null ? '' : ' for this one');
+        throw new \Exception("This file ({$size($bytes)}) would take this project past its {$size($limit)} storage"
+            . " limit: $inUse. Delete or replace a table that's no longer needed, clear cached responses on the"
+            . ' API connections tab, or ask a REDCap administrator to raise the limit.');
     }
 
     private function formatDataTableBytes($bytes)

@@ -450,6 +450,96 @@ trait ApiSources
         return $notices;
     }
 
+    // What this project has cached, for the API connections tab. The cache keys its entries by a hash
+    // of the source's URL (ConfiguredApiProvider::idForUrl), not its position, so:
+    //   sources - [index => usage] for every configured source, where usage is entries, bytes (stored
+    //             size), oldest and newest (unix times; 0 when nothing is stored), provider (the id),
+    //             same_url (the other source indexes with the same URL, which share these entries),
+    //             shared_entries and shared_bytes (entries this source's public, keyless responses
+    //             have in the cross-project "system" scope, which other projects use too)
+    //   orphans - [provider id => usage] for entries no configured source owns any more: a source
+    //             that was deleted, or whose URL was changed
+    //   total   - entries and bytes across sources and orphans, counting a shared URL's entries once
+    //   shared  - entries and bytes in the cross-project scope, for this project's sources
+    // Only the project's own (project- and record-scoped) entries count towards total and can be cleared.
+    public function apiCacheUsage()
+    {
+        $projectId = (int) $this->getProjectId();
+        $storage = $this->apiCacheStorage();
+        $own = $storage->usageByProvider($projectId);
+
+        $providerOf = [];
+        foreach ($this->getApiSourceConfigs() as $source) {
+            if ($source['url'] !== '') {
+                $providerOf[$source['index']] = \UKModules\ADIF\Cache\Provider\ConfiguredApiProvider::idForUrl($source['url']);
+            }
+        }
+        $shared = $storage->sharedUsageByProvider(array_values(array_unique($providerOf)));
+
+        $empty = ['entries' => 0, 'bytes' => 0, 'oldest' => 0, 'newest' => 0];
+        $sources = [];
+        foreach ($providerOf as $index => $provider) {
+            $sources[$index] = ($own[$provider] ?? $empty) + [
+                'provider' => $provider,
+                'same_url' => array_values(array_diff(array_keys($providerOf, $provider, true), [$index])),
+                'shared_entries' => $shared[$provider]['entries'] ?? 0,
+                'shared_bytes' => $shared[$provider]['bytes'] ?? 0,
+            ];
+        }
+
+        return [
+            'sources' => $sources,
+            'orphans' => array_diff_key($own, array_flip($providerOf)),
+            'total' => ['entries' => array_sum(array_column($own, 'entries')), 'bytes' => array_sum(array_column($own, 'bytes'))],
+            'shared' => ['entries' => array_sum(array_column($shared, 'entries')), 'bytes' => array_sum(array_column($shared, 'bytes'))],
+        ];
+    }
+
+    // Removes this project's cached responses for one source, so its next imports call the API again.
+    // Entries are kept by URL, so another source with the same URL loses them too (the page says so),
+    // and responses shared with other projects stay. Returns how many were removed.
+    public function clearApiSourceCache($index, $expectedUrl)
+    {
+        [$arrays, $count] = $this->apiSourceArrays();
+        $index = $this->checkApiSourceIndex($arrays, $count, $index, $expectedUrl);
+        $url = trim((string) ($arrays['api'][$index] ?? ''));
+        if ($url === '') {
+            return 0;
+        }
+
+        $removed = $this->apiCacheStorage()->purgeProjectProvider((int) $this->getProjectId(),
+            \UKModules\ADIF\Cache\Provider\ConfiguredApiProvider::idForUrl($url));
+        $this->projectCacheBytes = null;   // the storage bar re-reads the cache's size
+        $this->logApiSourceChange("cache cleared ($removed cached response" . ($removed === 1 ? '' : 's') . ')', $url);
+
+        return $removed;
+    }
+
+    // Removes this project's cached responses left by a source that no longer exists (see
+    // apiCacheUsage's orphans). Refused for a provider a configured source still uses.
+    public function clearOrphanedApiCache($providerId)
+    {
+        if (!is_string($providerId) || !preg_match('/^src_[0-9a-f]{12}$/', $providerId)) {
+            throw new \Exception('That cache entry group isn\'t valid. Reload the page.');
+        }
+        foreach ($this->getApiSourceConfigs() as $source) {
+            if ($source['url'] !== '' && \UKModules\ADIF\Cache\Provider\ConfiguredApiProvider::idForUrl($source['url']) === $providerId) {
+                throw new \Exception('Those cached responses belong to a configured source now. Reload the page.');
+            }
+        }
+
+        $removed = $this->apiCacheStorage()->purgeProjectProvider((int) $this->getProjectId(), $providerId);
+        $this->projectCacheBytes = null;
+        try {
+            $this->log('API source: cache cleared for a removed source',
+                ['provider' => $providerId, 'cached_responses' => $removed]);
+        } catch (\Throwable $e) {
+            error_log("ADIF: couldn't log a cache clear: " . $e->getMessage());
+        }
+
+        return $removed;
+    }
+
     // An audit line in the module log. The URL only, with any key in its query string masked; never
     // the API key setting itself.
     private function logApiSourceChange($action, $url)

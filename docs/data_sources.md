@@ -8,7 +8,10 @@ page; `pages/Data_Tables.php` now redirects here). Two tabs:
   from its wiring (see `classes/DataTables.php`).
 
 Each tab handles its own form posts. Every form posts `adif_tab`, so a save lands back on its tab.
-Only users with Project Design rights see either tab, the same rule as REDCap's module configuration.
+Only users with Project Design rights can change anything on either tab, the same rule as REDCap's module
+configuration. Other users with ADIF access see both tabs view-only: every field disabled, no add, upload,
+test, reorder, replace or delete controls, and URLs with any key in them masked. Posts from them are refused
+server-side. See [permissions.md](permissions.md).
 
 ## Same settings as REDCap's dialog
 
@@ -54,11 +57,36 @@ until the page gets a proper field for it.
 Sends one request to the saved URL plus a path, with the saved key, and shows the status, timing,
 size and the start of the response. `[placeholders]` must be replaced with a real value first.
 
+## Storage and cached responses
+
+Uploaded tables and cached API responses share one storage allowance per project: the
+`adif-table-max-project-mb` system setting, 32 MB by default (`DataTables::projectStorageUsage()`).
+Both tabs show it as the same bar (`adif_ds_storage_bar()` in `pages/DataSources.php`), with a segment
+for the tables and one for the cache. When it's full, new uploads and replacements are refused
+(`checkDataTableProjectLimit()`), and the message suggests deleting a table or clearing cached
+responses. Caching carries on regardless, so imports never fail for lack of space. A cached
+response's size is the length of what's stored, which for an identifying source is the encrypted
+form. Only the project's own entries count. Responses from public, keyless sources shared with other
+projects don't count towards it; the API tab notes how much they take.
+
+Each source's cached responses are shown in its own panel on the API connections tab
+(`ApiSources::apiCacheUsage()`). The panel gives how many there are, how much space they take and
+when they were stored, and its *Cached* badge shows the size. **Clear cached responses** (Design
+rights) removes the project's entries for that source through `ApiSources::clearApiSourceCache()`, so
+its next imports call the API again and the space goes back to the allowance. The cache keys entries
+by the source's URL, so two sources with the same URL share them (the panel says so, and clearing one
+clears both). Responses left by a source that's since been deleted, or had its URL changed, are noted
+under the storage bar with their own clear button. Each clear is written to the module log with the
+source's URL (any key masked) and how many responses were removed.
+
+Viewers without Design rights see the bar and the figures but not the buttons, and the server refuses
+a clear from them like any other change.
+
 ## When a project is deleted
 
 A project's uploaded tables are files in REDCap's file storage, under the project. When the project
-is permanently deleted, the hourly `adif_deleted_project_cleanup` cron marks them deleted, so
-REDCap's cron removes them. It also removes ADIF's settings for the project, API keys included.
+is permanently deleted, ADIF's scheduled cleanup (weekly by default; administrators set when in
+ADIF's system settings) marks them deleted, so REDCap's cron removes them. It also removes ADIF's settings for the project, API keys included.
 While the project is only marked deleted, the tables are kept, so restoring it restores them. See
 "When a project is deleted" in `docs/caching.md` and `classes/ProjectCleanup.php`.
 

@@ -10,9 +10,34 @@
 
 /** @var \UKModules\ADIF\ADIF $module */
 
+$pid = $module->getProjectId();
+
+// The Refresh all records card's buttons post here (see classes/ImportRefresh.php): handled before the
+// page is drawn, then sent back to it, so reloading the page doesn't post again. Only users with
+// Project Design rights can start or cancel a refresh, since it rewrites every record's mapped fields.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_refresh_action'])) {
+    $refreshOutcome = 'denied';
+    if ($module->canConfigureApiSources($pid)) {
+        try {
+            $refreshOutcome = $_POST['adif_refresh_action'] === 'cancel'
+                ? $module->cancelImportRefresh($pid)
+                : $module->startImportRefresh($pid, !empty($_POST['bypass_cache']))['status'];
+        } catch (\Throwable $e) {
+            $refreshOutcome = 'error';
+            error_log("ADIF: couldn't start or cancel the bulk refresh in project $pid: " . $e->getMessage());
+        }
+    }
+    if (!headers_sent()) {
+        header('Location: ' . $module->getUrl('pages/Imports.php') . '&refresh=' . rawurlencode($refreshOutcome)
+            . '#adif-imp-refresh', true, 303);
+        exit;
+    }
+    $_GET['refresh'] = $refreshOutcome;
+}
+
 require_once APP_PATH_DOCROOT . 'ProjectGeneral/header.php';
 
-$pid = $module->getProjectId();
+$module->requireModuleView($pid);
 
 $recordFilter = trim((string) ($_GET['record'] ?? ''));
 $statusFilter = in_array((string) ($_GET['status'] ?? ''), ['attention', 'dismissed', 'stale', 'ok'], true) ? (string) $_GET['status'] : '';
@@ -22,15 +47,19 @@ $limitParam = (int) ($_GET['limit'] ?? 50);
 $limit = in_array($limitParam, [25, 50, 100, 200], true) ? $limitParam : 50;
 
 // Retry all failed covers every import among the most recent 500 runs, not only the runs listed
-// below; without a record filter, the list is the newest of those same runs
-$recentRuns = $module->importRuns($pid, ['limit' => 500]);
+// below; without a record filter, the list is the newest of those same runs. A user in a data access
+// group sees only their group's records, here and in every list below (see classes/Access.php).
+$recentRuns = $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['limit' => 500]));
 $allRuns = $recordFilter === ''
     ? array_slice($recentRuns, 0, $limit)
-    : $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]);
+    : $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]));
 $attentionCount = count(array_filter($allRuns, fn($run) => $run['outcome'] === 'attention'));
+$recordVisible = $recordFilter === '' || $module->canSeeRecord($pid, $recordFilter);
 
-// Retrying writes record data, so it's limited to the users who define what gets imported
-$canRetry = $module->canConfigureApiSources($pid);
+// Retrying, dismissing and running imports write record data (or decide it can stay empty), so they
+// need View & Edit rights on the mapped instruments, or Project Design rights (see classes/Access.php).
+// Read Only users see the same page without those controls.
+$canRetry = $module->canResolveImports($pid);
 
 // What Retry all failed re-runs: each import whose latest run needs attention (see
 // ImportStatus::importRetryTargets), only the filtered record's when there is one
@@ -49,7 +78,8 @@ $runInBackground = $module->importsRunInBackground($pid);
 $queuedImports = [];
 $queueError = null;
 try {
-    $queuedImports = $module->importQueuePending($pid, $recordFilter !== '' ? $recordFilter : null, 500);
+    $queuedImports = $module->onlyVisibleRecords($pid,
+        $module->importQueuePending($pid, $recordFilter !== '' ? $recordFilter : null, 500));
 } catch (\Throwable $e) {
     $queueError = $e->getMessage();
 }
@@ -64,7 +94,8 @@ $queueShownCap = 50;
 $neverImported = [];
 $neverImportedError = null;
 try {
-    $neverImported = $module->importNeverAttempted($pid, $recordFilter !== '' ? $recordFilter : null);
+    $neverImported = $module->onlyVisibleRecords($pid,
+        $module->importNeverAttempted($pid, $recordFilter !== '' ? $recordFilter : null));
 } catch (\Throwable $e) {
     $neverImportedError = $e->getMessage();
 }
@@ -74,6 +105,24 @@ foreach ($neverImported as $index => &$unit) {
 }
 unset($unit);
 $neverImportable = array_values(array_filter($neverImported, fn($unit) => $unit['importable']));
+
+// The bulk refresh (see classes/ImportRefresh.php): its latest request, the server's off-peak hours, and
+// what the last button press did
+$refreshJob = $module->importRefreshJob($pid);
+$refreshActive = $module::importRefreshActive($refreshJob);
+$refreshWindow = $module->importRefreshWindow();
+$canRefresh = $module->canConfigureApiSources($pid);
+$refreshMessages = [
+    'started' => ['ok', 'Refresh requested. It runs in the background during off-peak hours; its progress shows here.'],
+    'active' => ['error', 'A refresh is already going. Cancel it first to start another.'],
+    'nothing_mapped' => ['error', 'Nothing is mapped yet, so there\'s nothing to refresh. Map fields on the Mapping page first.'],
+    'no_records' => ['error', 'There are no records to refresh.'],
+    'cancelled' => ['ok', 'Refresh cancelled. The imports it already ran stay.'],
+    'not_active' => ['empty', 'There\'s no refresh going to cancel.'],
+    'denied' => ['error', 'Only users with Project Design rights can refresh every record\'s imports.'],
+    'error' => ['error', 'The refresh couldn\'t be started or cancelled. The server\'s PHP error log has the details.'],
+];
+$refreshNotice = $refreshMessages[(string) ($_GET['refresh'] ?? '')] ?? null;
 $neverRecordCount = count(array_unique(array_column($neverImported, 'record')));
 // The table lists this many places; Import all still covers every one
 $neverShownCap = 200;
@@ -85,10 +134,13 @@ if ($statusFilter !== '') {
 
 // The record lookup doubles as the table's record filter: entering a record shows both its latest
 // run per event (below) and the filtered runs list
-$recordStatus = $recordFilter !== '' ? $module->importRecordStatus($pid, $recordFilter) : null;
+// (a record outside the user's data access group looks like one with no runs)
+$recordStatus = $recordFilter !== '' ? ($recordVisible ? $module->importRecordStatus($pid, $recordFilter) : []) : null;
 
-// When the list is empty despite runs having been logged, this tells the two likely causes apart
-$diagnostics = empty($allRuns) ? $module->importLogDiagnostics($pid) : null;
+// When the list is empty despite runs having been logged, this tells the two likely causes apart.
+// It quotes a log entry, so only users who see every record and can change the setup get it.
+$diagnostics = empty($allRuns) && $module->canConfigureApiSources($pid) && $module->adifVisibleRecords($pid) === null
+    ? $module->importLogDiagnostics($pid) : null;
 
 // The page's own URL parameters: a GET form replaces the whole query string, so they must be
 // echoed back as hidden fields or submitting the filters lands on "a module prefix must be included"
@@ -192,6 +244,12 @@ function adif_imp_ago($time)
     return date('Y-m-d H:i', (int) $time);
 }
 
+// "22:00" for an off-peak hour
+function adif_imp_hour($hour)
+{
+    return sprintf('%02d:00', (int) $hour);
+}
+
 function adif_imp_instrument($run)
 {
     if ($run['instrument'] === null || $run['instrument'] === '') {
@@ -213,6 +271,10 @@ function adif_imp_instrument($run)
         from <strong>stored data</strong> during an API outage are noted but not flagged, since their fields were
         filled as intended. Runs that need attention can be re-run from here for the same record, event,
         instrument and instance &mdash; the retry is logged like any other run.</p>
+    <?php if (!$canRetry): ?>
+        <div class="adif-alert adif-alert-empty">You can view this page. Retrying, dismissing or running imports needs
+            View &amp; Edit rights on every instrument with ADIF mappings, or Project Design rights.</div>
+    <?php endif; ?>
 
     <?php if ($attentionCount > 0 && $statusFilter !== 'attention'): ?>
         <div class="adif-alert adif-alert-error" role="alert">
@@ -372,6 +434,108 @@ function adif_imp_instrument($run)
             survey respondent waits</em> is ticked in this project's ADIF settings).</p>
     <?php endif; ?>
 
+    <section class="adif-dt-card adif-imp-refresh" id="adif-imp-refresh">
+        <h4>Refresh all records</h4>
+        <p class="adif-imp-explain">Runs the import again for every record<?= $module->adifVisibleRecords($pid) !== null
+            ? ' in your data access group' : '' ?>: each event and instance with data gets its mapped fields filled with
+            what the APIs return now, replacing the values there. Useful after a new data release, or after changing
+            the mappings. It runs in the background only during off-peak hours,
+            <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?></strong> to
+            <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['end'])) ?></strong> server time (it's
+            <?= adif_imp_h(date('H:i')) ?> now), at about <?= (int) $refreshWindow['per_minute'] ?> imports a minute
+            across the server, so a large project can take several nights. Each import is listed below like any other
+            run.</p>
+
+        <?php if ($refreshNotice !== null): ?>
+            <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$refreshNotice[0]] ?>"
+                 role="status"><?= adif_imp_h($refreshNotice[1]) ?></div>
+        <?php endif; ?>
+
+        <?php if ($refreshJob !== null): ?>
+            <?php
+            $total = max(1, (int) $refreshJob['record_count']);
+            $done = min($total, (int) $refreshJob['next']);
+            [$pillClass, $pillText] = match ($refreshJob['status']) {
+                'waiting' => ['adif-status-stale', $refreshWindow['open'] ? 'Starting' : 'Waiting for off-peak hours'],
+                'running' => ['adif-status-stale', $refreshWindow['open'] ? 'Running' : 'Paused until off-peak hours'],
+                'done' => ['adif-status-ok', 'Finished'],
+                'cancelled' => ['adif-status-none', 'Cancelled'],
+                default => ['adif-status-error', 'Stopped'],
+            };
+            // A rough estimate for a refresh that has started: its imports per record so far, at the server's pace
+            $minutesLeft = null;
+            if ($refreshActive && $done > 0) {
+                $minutesLeft = (int) ceil(($refreshJob['imports'] / $done) * ($total - $done) / $refreshWindow['per_minute']);
+            }
+            ?>
+            <div class="adif-imp-refresh-status">
+                <span class="adif-status-pill <?= $pillClass ?>"><?= adif_imp_h($pillText) ?></span>
+                <span><?= number_format($done) ?> of <?= number_format($total) ?> record<?= $total === 1 ? '' : 's' ?></span>
+                <span><?= number_format((int) $refreshJob['imports']) ?> import<?= (int) $refreshJob['imports'] === 1 ? '' : 's' ?> run</span>
+                <?php if ((int) $refreshJob['attention'] > 0): ?>
+                    <span class="adif-imp-refresh-attention"><?= number_format((int) $refreshJob['attention']) ?> needing attention</span>
+                <?php endif; ?>
+                <?php if ((int) $refreshJob['skipped'] > 0): ?>
+                    <span title="Places whose lookup values (an address, say) aren't in the record, so there was nothing to look up"><?= number_format((int) $refreshJob['skipped']) ?> skipped: lookup values missing</span>
+                <?php endif; ?>
+            </div>
+            <div class="adif-imp-refresh-bar" aria-hidden="true"><span style="width: <?= round($done / $total * 100, 1) ?>%"></span></div>
+            <p class="adif-imp-note">
+                Requested by <?= adif_imp_h($refreshJob['requested_by']) ?> on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['requested_at'])) ?>,
+                <?= !empty($refreshJob['bypass_cache']) ? 'calling the APIs for everything' : 'reusing stored data where the cache allows' ?>.
+                <?php if (!empty($refreshJob['last_worked_at'])): ?>
+                    Last worked on <?= adif_imp_h(adif_imp_ago($refreshJob['last_worked_at'])) ?>.
+                <?php endif; ?>
+                <?php if ($refreshJob['status'] === 'waiting' && !$refreshWindow['open']): ?>
+                    It starts at <?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?>.
+                <?php elseif ($refreshJob['status'] === 'running' && !$refreshWindow['open']): ?>
+                    It carries on at <?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?>.
+                <?php endif; ?>
+                <?php if ($minutesLeft !== null): ?>
+                    Roughly <?= $minutesLeft < 90 ? $minutesLeft . ' minute' . ($minutesLeft === 1 ? '' : 's')
+                        : round($minutesLeft / 60, 1) . ' hours' ?> of off-peak time to go, if no other project is refreshing.
+                <?php endif; ?>
+                <?php if ($refreshJob['status'] === 'cancelled'): ?>
+                    Cancelled by <?= adif_imp_h($refreshJob['cancelled_by'] ?? '?') ?> on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>.
+                <?php elseif ($refreshJob['status'] === 'done'): ?>
+                    Finished on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>.
+                <?php elseif ($refreshJob['status'] === 'failed'): ?>
+                    Stopped on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>: <?= adif_imp_h($refreshJob['message'] ?? '') ?>
+                <?php endif; ?>
+            </p>
+        <?php endif; ?>
+
+        <?php if ($canRefresh): ?>
+            <?php if ($refreshActive): ?>
+                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>" class="adif-imp-toolbar"
+                      onsubmit="return confirm('Cancel the refresh? Imports it has already run stay; the rest of the records are left as they are.');">
+                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                    <input type="hidden" name="adif_refresh_action" value="cancel">
+                    <button type="submit" class="btn btn-defaultrc btn-sm">Cancel refresh</button>
+                </form>
+            <?php else: ?>
+                <?php
+                $refreshConfirm = 'Refresh every record' . ($module->adifVisibleRecords($pid) !== null ? ' in your data access group' : '')
+                    . '? The values the APIs return will replace what\'s in the mapped fields now. It runs between '
+                    . adif_imp_hour($refreshWindow['start']) . ' and ' . adif_imp_hour($refreshWindow['end'])
+                    . ' server time, and can be cancelled from this page.';
+                ?>
+                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>" class="adif-imp-toolbar"
+                      onsubmit="return confirm(<?= adif_imp_h(json_encode($refreshConfirm)) ?>);">
+                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                    <input type="hidden" name="adif_refresh_action" value="start">
+                    <label class="adif-imp-bypass" title="On (recommended): every import calls the APIs, so the refresh gets current data. Off: responses stored by the cache are reused where each source's settings allow.">
+                        <input type="checkbox" name="bypass_cache" value="1" checked>
+                        Skip stored data and call the APIs
+                    </label>
+                    <button type="submit" class="btn btn-primaryrc btn-sm">Refresh all records</button>
+                </form>
+            <?php endif; ?>
+        <?php else: ?>
+            <p class="adif-imp-note">Users with Project Design rights can start or cancel a refresh.</p>
+        <?php endif; ?>
+    </section>
+
     <?php if ($neverImportedError !== null): ?>
         <div class="adif-alert adif-alert-error" role="alert">Couldn't check for records that have never been
             imported: <?= adif_imp_h($neverImportedError) ?></div>
@@ -402,7 +566,8 @@ function adif_imp_instrument($run)
                     'instance' => $unit['repeat_instance'],
                 ], $neverImportable), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
             <?php elseif (!$canRetry): ?>
-                <p class="adif-imp-note">Users with Project Design rights can run these imports from this page.</p>
+                <p class="adif-imp-note">Users with View &amp; Edit rights on the mapped instruments can run these
+                    imports from this page.</p>
             <?php endif; ?>
             <?php if (count($neverImportable) < count($neverImported)): ?>
                 <p class="adif-imp-note"><?= count($neverImported) - count($neverImportable) ?> can't be imported yet: a
