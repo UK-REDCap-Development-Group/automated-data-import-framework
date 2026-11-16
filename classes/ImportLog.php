@@ -34,7 +34,10 @@ trait ImportLog
         }
 
         try {
-            REDCap::logEvent("ADIF: $description", $this->projectLogText($instrument, $summary, $runId), null,
+            // REDCap fills in the entry's user itself (a module can't set it), so a run with nobody logged
+            // in - a survey submission or the cron - also says who ran it in the text
+            $runBy = $this->importLoggedInUsername() === '' ? self::importRunActor($description) : null;
+            REDCap::logEvent("ADIF: $description", $this->projectLogText($instrument, $summary, $runId, $runBy), null,
                 $record, $eventId, $projectId);
         } catch (\Throwable $e) {
             error_log("ADIF: couldn't write to the project log for record $record: " . $e->getMessage());
@@ -122,9 +125,12 @@ trait ImportLog
 
     // What study staff see on the Logging page: the outcome per endpoint and which fields were left
     // empty, with a pointer to the module log for the rest. saveData already logs the values saved.
-    private function projectLogText($instrument, array $summary, $runId)
+    private function projectLogText($instrument, array $summary, $runId, $runBy = null)
     {
         $lines = [];
+        if ($runBy !== null) {
+            $lines[] = "Run by: $runBy";
+        }
         if ($instrument) {
             $lines[] = "Instrument: $instrument";
         }
@@ -160,6 +166,17 @@ trait ImportLog
         $lines[] = "Details: ADIF module log, run_id $runId";
 
         return implode("\n", $lines);
+    }
+
+    // The logged-in user's username, or '' when nobody is (survey pages, the cron). getUser() throws then.
+    private function importLoggedInUsername()
+    {
+        try {
+            $user = $this->getUser();
+            return $user ? (string) $user->getUsername() : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     // log() with blank parameters left out, and any failure reported to the PHP error log instead of thrown

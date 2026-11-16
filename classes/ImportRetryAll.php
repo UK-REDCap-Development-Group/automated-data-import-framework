@@ -82,6 +82,11 @@ trait ImportRetryAll
         $this->setProjectSetting(self::$retryAllJobSetting, $job, $projectId);
         $this->writeModuleLog('ADIF retry all requested', ['project_id' => $projectId, 'retry_all_id' => $job['id'],
             'runs' => count($runIds), 'bypass_cache' => $bypassCache ? 'yes' : 'no']);
+        $this->logAuditEvent('retry of all failed imports requested', [
+            'Failed imports' => (string) count($runIds),
+            'Record' => (string) $record,
+            'Stored data' => $bypassCache ? 'not reused: every import calls its APIs' : 'reused where each source\'s cache settings allow',
+        ], $projectId, null, false);
 
         return ['status' => 'started', 'job' => $job];
     }
@@ -101,6 +106,9 @@ trait ImportRetryAll
         $this->setProjectSetting(self::$retryAllJobSetting, $job, $projectId);
         $this->writeModuleLog('ADIF retry all cancelled', ['project_id' => $projectId, 'retry_all_id' => $job['id'],
             'runs_done' => $job['next']]);
+        $this->logAuditEvent('retry of all failed imports cancelled', [
+            'Retries done' => $job['next'] . ' of ' . count($job['run_ids'] ?? []),
+        ], $projectId, null, false);
         return 'cancelled';
     }
 

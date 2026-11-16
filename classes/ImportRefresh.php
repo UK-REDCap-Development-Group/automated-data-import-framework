@@ -129,6 +129,11 @@ trait ImportRefresh
         $this->setProjectSetting(self::$importRefreshJobSetting, $job, $projectId);
         $this->writeModuleLog('ADIF bulk refresh requested', ['project_id' => $projectId,
             'refresh_id' => $job['id'], 'records' => count($records), 'bypass_cache' => $bypassCache ? 'yes' : 'no']);
+        $this->logAuditEvent('refresh of all records requested', [
+            'Records' => (string) count($records),
+            'Stored data' => $bypassCache ? 'not reused: every import calls its APIs' : 'reused where each source\'s cache settings allow',
+            'Effect' => 'Every mapped field in these records is imported again during off-peak hours, overwriting what\'s there.',
+        ], $projectId, null, false);
 
         return ['status' => 'started', 'job' => $job];
     }
@@ -149,6 +154,9 @@ trait ImportRefresh
         $this->setProjectSetting(self::$importRefreshRecordsSetting, null, $projectId);
         $this->writeModuleLog('ADIF bulk refresh cancelled', ['project_id' => $projectId, 'refresh_id' => $job['id'],
             'records_done' => $job['next'], 'imports' => $job['imports']]);
+        $this->logAuditEvent('refresh of all records cancelled', [
+            'Records done' => "{$job['next']} of {$job['record_count']}",
+        ], $projectId, null, false);
         return 'cancelled';
     }
 

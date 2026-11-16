@@ -86,6 +86,11 @@ trait ImportAll
         $this->setProjectSetting(self::$importAllJobSetting, $job, $projectId);
         $this->writeModuleLog('ADIF import all requested', ['project_id' => $projectId, 'import_all_id' => $job['id'],
             'places' => count($places), 'records' => count(array_unique(array_column($places, 0)))]);
+        $this->logAuditEvent('import of never-imported records requested', [
+            'Records' => (string) count(array_unique(array_column($places, 0))),
+            'Imports' => (string) count($places),
+            'Record' => (string) $record,
+        ], $projectId, null, false);
 
         return ['status' => 'started', 'job' => $job];
     }
@@ -105,6 +110,9 @@ trait ImportAll
         $this->setProjectSetting(self::$importAllJobSetting, $job, $projectId);
         $this->writeModuleLog('ADIF import all cancelled', ['project_id' => $projectId, 'import_all_id' => $job['id'],
             'places_done' => $job['next']]);
+        $this->logAuditEvent('import of never-imported records cancelled', [
+            'Imports done' => $job['next'] . ' of ' . count($job['places'] ?? []),
+        ], $projectId, null, false);
         return 'cancelled';
     }
 

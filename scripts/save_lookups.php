@@ -7,7 +7,8 @@ namespace UKModules\ADIF;
 // Mapping page's lookup prompt, as { "<source>": { "<placeholder>": "<field>" } }, where a source is
 // an API source's index or an uploaded table's "table:<id>". Read back by Import::getLookupField.
 // The project is the page's own (the URL's pid, checked by REDCap), and only users who may configure
-// the module can save (see ADIF::requireMappingAccess).
+// the module can save (see ADIF::requireMappingAccess). Changes are logged (see AuditLog::logLookupFieldChanges),
+// since a lookup field decides which of a record's values are sent to a source.
 
 $pid = $module->requireMappingAccess();
 $lookups = json_decode($_POST['lookups'] ?? '', true);
@@ -36,7 +37,9 @@ foreach ($lookups as $source => $placeholders) {
     }
 }
 
+$oldLookups = $module->getProjectSetting('lookup-fields', $pid) ?: [];
 $module->setProjectSetting('lookup-fields', $clean, $pid);
+$module->logLookupFieldChanges($pid, $oldLookups, $clean);
 
 echo json_encode([
     'status' => 'success',

@@ -127,12 +127,13 @@ trait ApiSources
             }
         }
 
+        $before = $this->auditSettingsSnapshot();
         foreach ($values as $settingKey => $value) {
             $arrays[$settingKey][$index] = $value;
         }
         $this->writeApiSourceArrays($arrays, max($count, $index + 1));
 
-        $this->logApiSourceChange($isNew ? 'added' : 'saved', $values['api']);
+        $this->logApiSourceSave($before, ['Mapped fields now skipped' => self::auditBrokenFields($breaks)]);
 
         return ['status' => 'saved', 'index' => $index, 'breaks' => $breaks,
             'notices' => $this->apiSourceNotices($index)];
@@ -145,8 +146,8 @@ trait ApiSources
     {
         [$arrays, $count] = $this->apiSourceArrays();
         $index = $this->checkApiSourceIndex($arrays, $count, $index, $expectedUrl);
-        $url = trim((string) ($arrays['api'][$index] ?? ''));
         $breaks = $this->apiSourceBreakage($index, '', null);
+        $before = $this->auditSettingsSnapshot();
 
         foreach ($arrays as $key => $entries) {
             $list = [];
@@ -162,7 +163,7 @@ trait ApiSources
             return $i < $index ? $i : ($i === $index ? null : $i - 1);
         });
 
-        $this->logApiSourceChange('deleted', $url);
+        $this->logApiSourceSave($before, ['Mapped fields now skipped' => self::auditBrokenFields($breaks)]);
 
         return ['breaks' => $breaks];
     }
@@ -178,6 +179,7 @@ trait ApiSources
         if ($other < 0 || $other >= $count) {
             throw new \Exception('That source is already ' . ($direction < 0 ? 'first.' : 'last.'));
         }
+        $before = $this->auditSettingsSnapshot();
 
         foreach ($arrays as $key => $entries) {
             $a = $entries[$index] ?? null;
@@ -190,7 +192,7 @@ trait ApiSources
             return $i === $index ? $other : ($i === $other ? $index : $i);
         });
 
-        $this->logApiSourceChange('moved', trim((string) ($arrays['api'][$other] ?? '')));
+        $this->logApiSourceSave($before);
 
         return $other;
     }
@@ -510,7 +512,10 @@ trait ApiSources
         $removed = $this->apiCacheStorage()->purgeProjectProvider((int) $this->getProjectId(),
             \UKModules\ADIF\Cache\Provider\ConfiguredApiProvider::idForUrl($url));
         $this->projectCacheBytes = null;   // the storage bar re-reads the cache's size
-        $this->logApiSourceChange("cache cleared ($removed cached response" . ($removed === 1 ? '' : 's') . ')', $url);
+        $this->logAuditEvent('cached API responses cleared', [
+            'Source' => self::maskApiUrl($url),
+            'Responses removed' => (string) $removed,
+        ], $this->getProjectId());
 
         return $removed;
     }
@@ -530,26 +535,14 @@ trait ApiSources
 
         $removed = $this->apiCacheStorage()->purgeProjectProvider((int) $this->getProjectId(), $providerId);
         $this->projectCacheBytes = null;
-        try {
-            $this->log('API source: cache cleared for a removed source',
-                ['provider' => $providerId, 'cached_responses' => $removed]);
-        } catch (\Throwable $e) {
-            error_log("ADIF: couldn't log a cache clear: " . $e->getMessage());
-        }
+        $this->logAuditEvent('cached API responses cleared', [
+            'Source' => "a source that has since been removed ($providerId)",
+            'Responses removed' => (string) $removed,
+        ], $this->getProjectId());
 
         return $removed;
     }
 
-    // An audit line in the module log. The URL only, with any key in its query string masked; never
-    // the API key setting itself.
-    private function logApiSourceChange($action, $url)
-    {
-        try {
-            $this->log("API source: $action", ['url' => self::maskApiUrl((string) $url)]);
-        } catch (\Throwable $e) {
-            error_log("ADIF: couldn't log an API source change: " . $e->getMessage());
-        }
-    }
 
     // A URL (or a message quoting one) with any key-like query parameter's value masked
     public static function maskApiUrl($text)

@@ -22,6 +22,8 @@ $module->requireModuleView($pid);
 // without their forms' controls or actions (see classes/Access.php). Each tab checks $canManage
 // again before acting on a post.
 $canManage = $module->canConfigureApiSources($pid);
+// So a later save in REDCap's module configuration dialog can be compared with something (see AuditLog)
+$module->ensureAuditSettingsSnapshot($pid);
 
 $tabs = ['apis' => 'API connections', 'tables' => 'Uploaded tables'];
 $tab = (string) ($_SERVER['REQUEST_METHOD'] === 'POST' ? ($_POST['adif_tab'] ?? '') : ($_GET['tab'] ?? ''));

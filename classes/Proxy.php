@@ -140,7 +140,7 @@ trait Proxy
 
         //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
         // The timeout matters for imports, which run while a survey respondent waits on the completion page
-        $client = new Client(['verify' => false, 'timeout' => 30]);
+        $client = new Client(['verify' => true, 'timeout' => 30]);
 
         $headers = [
             'Accept' => 'application/json'

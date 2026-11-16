@@ -21,6 +21,7 @@ require_once __DIR__ . '/classes/ImportRateLimit.php';
 require_once __DIR__ . '/classes/ProjectCleanup.php';
 require_once __DIR__ . '/classes/ApiSources.php';
 require_once __DIR__ . '/classes/Access.php';
+require_once __DIR__ . '/classes/AuditLog.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -39,6 +40,7 @@ class ADIF extends AbstractExternalModule
     use ProjectCleanup;
     use ApiSources;
     use Access;
+    use AuditLog;
 
     // What a user can do with ADIF in a project (see classes/Access.php); each level includes the ones below
     const ACCESS_NONE = 0;     // no ADIF pages or menu links
@@ -192,6 +194,25 @@ class ADIF extends AbstractExternalModule
     private static $recordNotInGroup = 'That record isn\'t in your data access group.';
 
     // Requests from module.ajax() in the browser. Actions must also be listed under auth-ajax-actions in config.json.
+    // After a save in REDCap's module configuration dialog (project or Control Center): logs what changed,
+    // since the dialog edits the same API sources as the Data Sources page (see AuditLog)
+    function redcap_module_save_configuration($project_id)
+    {
+        $this->logConfigurationDialogSave($project_id);
+    }
+
+    // Shown wherever the configuration dialog can be opened from: makes sure there's a copy of the
+    // settings for the dialog's next save to be compared with (see AuditLog). The button always shows.
+    function redcap_module_configure_button_display($project_id = null)
+    {
+        try {
+            $this->ensureAuditSettingsSnapshot($project_id ?: $this->getProjectId());
+        } catch (\Throwable $e) {
+            error_log('ADIF: ' . $e->getMessage());
+        }
+        return true;
+    }
+
     function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
         switch ($action) {

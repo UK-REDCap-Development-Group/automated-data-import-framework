@@ -864,7 +864,6 @@ $projectTitle = \REDCap::getProjectTitle();
         return {modalOverlay, modalBox};
     }
 
-    // TODO: add a logging call in here to track when forms are added or removed
     // Creates a modal that lets you select which forms you want to sync and ignore the ones you don't want
     function manageForms(instruments, displayed) {
         const built = buildModal();
@@ -1246,11 +1245,10 @@ $projectTitle = \REDCap::getProjectTitle();
                     + 'page), or choose other fields for them.');
     }
 
-    // TODO: somehow we want to log changes made, but it runs on every individual change currently. Refactor so that we
-    //TODO: cont. ^ benefit from it saving often but that it is only logged by change session.
-
-    // Save a snapshot of configurations whenever you want, currently runs on any change
-    function checkpoint() {
+    // Save a snapshot of configurations whenever you want, currently runs on any change. The server logs
+    // what each save changed (forms added or removed, mappings added, changed or removed), and nothing for
+    // a save that changes nothing (see AuditLog::logMappingChanges). reason 'upload': Upload Config.
+    function checkpoint(reason = '') {
         if (!CAN_EDIT) return;
         console.log('checkpoint')
         const mapping = {};
@@ -1298,7 +1296,8 @@ $projectTitle = \REDCap::getProjectTitle();
                 pid: <?= json_encode($_GET['pid'] ?? $project_id ?? 0) ?>,
                 redcap_csrf_token: <?= json_encode($csrf) ?>,
                 "mappings": JSON.stringify(mappings),
-                displayed: JSON.stringify(displayed)  // <-- Save which forms should be displayed
+                displayed: JSON.stringify(displayed),  // <-- Save which forms should be displayed
+                reason: reason
             },
             success: function (result) {
                 console.log("Checkpoint saved:", result);
@@ -1714,7 +1713,7 @@ $projectTitle = \REDCap::getProjectTitle();
                 mappings = uploaded.mappings;
                 displayed = Object.keys(mappings);
                 rebuild_from_mappings(instruments, dictionary, mappings);
-                checkpoint();
+                checkpoint('upload');
                 closeModal();
 
                 if (uploaded.dropped.length) {

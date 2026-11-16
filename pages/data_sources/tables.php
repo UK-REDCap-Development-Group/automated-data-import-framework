@@ -26,8 +26,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$canManage) {
 } elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string) ($_POST['adif_action'] ?? '');
     $tableId = (string) ($_POST['table_id'] ?? '');
+    $tableBefore = null;   // for the audit log (see AuditLog::logDataTableChange)
 
     try {
+        if (in_array($action, ['settings', 'replace'], true)) {
+            $tableBefore = $module->getDataTable($tableId);
+        }
         switch ($action) {
             case 'upload':
                 $outcome = $module->addDataTable($_FILES['table_file'] ?? null, $_POST['table_name'] ?? '');
@@ -67,7 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !$canManage) {
         $notices = $outcome['notices'];
         $focusTable = $action === 'delete' ? null : $outcome['table']['id'];
         if ($action !== 'test') {
-            $module->log("Data table: $action", ['table' => $outcome['table']['name'], 'file' => $outcome['table']['filename']]);
+            $module->logDataTableChange($action, $tableBefore, $outcome['table']);
         }
     } catch (\Throwable $e) {
         $error = $e->getMessage();

@@ -91,6 +91,9 @@ trait ImportStatus
         $runs = array_slice($runs, 0, $limit);
 
         foreach ($runs as &$run) {
+            if ($run['user'] === '') {
+                $run['user'] = self::importRunActor($run['description']);
+            }
             // Entries come back oldest first, so put each run's endpoint requests in the order they
             // were logged ('request' is "1 of N", "2 of N", ...)
             usort($run['request_logs'], fn($a, $b) => ((int) ($a['request'] ?? 0)) <=> ((int) ($b['request'] ?? 0)));
@@ -972,6 +975,25 @@ trait ImportStatus
             $username, $run['record'], $run['event_id'], $run['instrument'], $run['repeat_instance'] ?? 1, $summary)];
     }
 
+    // Who ran an import that no logged-in user did, for showing in place of a username. Survey submissions
+    // and the cron log no user; which one it was shows in the run's description (its summary message),
+    // so this works for runs logged before it existed too. A user who clicks Run queued imports now is
+    // logged as themselves.
+    public static function importRunActor($description)
+    {
+        $description = (string) $description;
+        if ($description === 'API import after survey completion') {
+            return 'ADIF (survey submission)';
+        }
+        if ($description === self::$importQueuedDescription
+            || str_starts_with($description, 'API import: bulk refresh')
+            || str_starts_with($description, 'API import: retry all failed')
+            || str_starts_with($description, 'API import: import all')) {
+            return 'ADIF (cron)';
+        }
+        return 'ADIF';
+    }
+
     // A run just made (a retry or a first import) in the shape importRuns() gives a logged one, built
     // from its summary through the same outcome rules, so the page can show it the way the run list
     // will once it's reloaded
@@ -985,7 +1007,7 @@ trait ImportStatus
         $newRun = [
             'run_id' => null,
             'logged' => time(),
-            'user' => $username,
+            'user' => $username !== '' ? $username : self::importRunActor($description),
             'record' => (string) $record,
             'event_id' => $eventId,
             'instrument' => $instrument,
