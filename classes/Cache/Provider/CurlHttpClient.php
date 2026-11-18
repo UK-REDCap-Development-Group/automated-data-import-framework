@@ -30,6 +30,9 @@ final class CurlHttpClient implements HttpClient
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => $this->timeoutSeconds,
             CURLOPT_FOLLOWLOCATION => true,
+            // HTTPS only, redirects included, as Proxy::sendApiRequest
+            CURLOPT_PROTOCOLS      => CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTPS,
         ]);
         $body   = curl_exec($ch);
         $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);

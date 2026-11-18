@@ -140,7 +140,8 @@ trait Proxy
 
         //$client = new Client(); // disabled because it didn't work on our test instance despite SSL being enabled on that server
         // The timeout matters for imports, which run while a survey respondent waits on the completion page
-        $client = new Client(['verify' => true, 'timeout' => 30]);
+        // HTTPS only, certificates checked, and a redirect can't drop the request to plain http
+        $client = new Client(['verify' => true, 'timeout' => 30, 'allow_redirects' => ['protocols' => ['https']]]);
 
         $headers = [
             'Accept' => 'application/json'
@@ -174,6 +175,14 @@ trait Proxy
             'byteSize' => null,
             'error' => null,
         ];
+
+        // Requests can carry record values (an address, an ID), so they're never sent unencrypted. Sources
+        // are checked when they're saved (see ApiSources), but one saved before that rule, or through the
+        // module configuration dialog, which doesn't check, is refused here.
+        if (!preg_match('#^https://#i', $apiUrl)) {
+            $result['error'] = 'ADIF only connects to APIs over HTTPS. Change this source\'s URL to its https:// address.';
+            return $result;
+        }
 
         $start = microtime(true);
 

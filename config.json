@@ -422,7 +422,9 @@
         "retry-import",
         "dismiss-import",
         "import-unattempted",
-        "run-import-queue"
+        "run-import-queue",
+        "import-after-data-entry",
+        "data-entry-import-status"
     ],
     "crons": [
         {
@@ -601,6 +603,15 @@
             "key": "import-immediately",
             "name": "<b>Imports:</b> run each import while the survey respondent waits, before their completion page appears. Leave unchecked (recommended) to run imports in the background, usually within a minute or two of submission, so a slow or unavailable API never holds up respondents. Check this only if a later survey needs to show imported values straight away.",
             "type": "checkbox"
+        },
+        {
+            "key": "data-entry-imports",
+            "name": "<b>Data entry:</b> surveys import automatically when they're completed. After a data entry form that ADIF imports into, or reads a lookup value from, is saved, should ADIF ask whether to import? Users who can resolve imports are asked; the import replaces the mapped fields' current values.",
+            "type": "dropdown",
+            "choices": [
+                {"value": "ask", "name": "Ask after each save (default)"},
+                {"value": "off", "name": "Don't ask: data entry saves never import"}
+            ]
         },
         {
             "key": "show-api-test-page",

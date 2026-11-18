@@ -477,6 +477,9 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             <span class="adif-ds-position"><?= $position + 1 ?></span>
             <h4 class="adif-ds-source-url"><?= $source['url'] !== '' ? adif_h(\UKModules\ADIF\ADIF::maskApiUrl($source['url'])) : '<em>No URL yet</em>' ?></h4>
             <span class="adif-ds-badges">
+                <?php if ($source['url_error']): ?>
+                    <span class="adif-status-pill adif-status-error">Not HTTPS</span>
+                <?php endif; ?>
                 <?php if ($source['schema_error']): ?>
                     <span class="adif-status-pill adif-status-error">Schema invalid</span>
                 <?php else: ?>
@@ -492,6 +495,9 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
             </span>
         </summary>
 
+        <?php if ($source['url_error']): ?>
+            <div class="adif-alert adif-alert-error"><?= adif_h($source['url_error']) ?></div>
+        <?php endif; ?>
         <?php if ($source['schema_error']): ?>
             <div class="adif-alert adif-alert-error"><?= adif_h($source['schema_error']) ?></div>
         <?php endif; ?>

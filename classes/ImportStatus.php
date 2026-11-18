@@ -986,6 +986,7 @@ trait ImportStatus
             return 'ADIF (survey submission)';
         }
         if ($description === self::$importQueuedDescription
+            || str_starts_with($description, self::$importQueuedDataEntryDescription)
             || str_starts_with($description, 'API import: bulk refresh')
             || str_starts_with($description, 'API import: retry all failed')
             || str_starts_with($description, 'API import: import all')) {

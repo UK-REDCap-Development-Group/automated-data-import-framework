@@ -529,3 +529,29 @@
     border-radius: 6px;
     background: #F6F7F9;
 }
+
+/* Import Triggers (Mapping page): the summary under the buttons, and the dialog's tags and notes */
+.adif-trigger-summary {
+    margin: 4px 0 12px;
+    padding: 8px 12px;
+    background: #f5f8fb;
+    border-left: 3px solid #337ab7;
+}
+.adif-trigger-mode {
+    margin: 8px 0 12px;
+    line-height: 1.8;
+}
+.adif-trigger-tag {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 6px;
+    font-size: 11px;
+    color: #31708f;
+    background: #d9edf7;
+    border-radius: 8px;
+}
+.adif-trigger-note {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #666;
+}

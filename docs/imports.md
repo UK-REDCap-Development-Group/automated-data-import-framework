@@ -258,6 +258,60 @@ failed the same way.
   import from running twice at once. Queued imports are left off the *Never imported* list, which
   would otherwise show them in the minute before they run.
 
+## Import triggers
+
+The Mapping page's **Import Triggers** button chooses which instruments' completion starts an import
+(`classes/ImportTriggers.php`, saved by `scripts/save_triggers.php` as the `import-triggers` project
+setting, and audited as "import triggers changed"):
+
+- **Any** (default): completing any selected instrument starts an import.
+- **All**: completing a selected instrument starts an import once every selected instrument that the event
+  has is complete. Completion is read within the event being imported, so in a longitudinal project a
+  selected instrument the event doesn't have is left out.
+
+"Completed" means the form status is **Complete**. A survey's submission sets that. A data entry form has to
+be saved as Complete, and ADIF then asks before importing (see below). A repeating instrument counts as
+complete for the instance that was saved.
+
+Triggers apply only to imports that start by themselves (`redcap_survey_complete`, and the question asked
+after a data entry save). Imports started by hand on this page (a retry, a first import, Import all,
+Retry all failed, Refresh all records, Run queued imports now) don't check them, and neither does an
+import already in the queue.
+
+With no instruments selected, nothing changes: any survey completed in an event with mappings starts an
+import, and saving a data entry form that holds mapped or lookup fields asks.
+
+## Imports after data entry
+
+Surveys import on their own when they're completed. A **data entry** save asks first
+(`classes/ImportDataEntry.php`, `js/data_entry_import.js`), because staff often open a form to correct a
+value by hand, and an import on every save would overwrite the fields they just fixed.
+
+- `redcap_save_record` (data entry only: a save with a survey hash is left to `redcap_survey_complete`)
+  checks whether the saved form has anything to do with the import, meaning it holds mapped fields or a
+  lookup field the event's imports read from. If so, it keeps an offer in the user's session: the record,
+  event, instrument and instance, the fields an import would write, and which of them already have values.
+- On the next page REDCap shows (the form again, the record's home page or the status dashboard), a dialog
+  asks once. It lists the fields an import would write, and the ones that already have values and would be
+  replaced. **Not now** leaves the record as it is. Saving again asks again.
+- **Import** sends `import-after-data-entry` with the offer's token. The server takes the record, event and
+  instance from the session offer, not from the request, and sends the import the same way a survey
+  submission's goes:
+  - normally onto the background queue (`queueImport()`, with `requested_by`). The cron runs it within the
+    server-wide limit, and logs it as `API import after data entry (in the background), requested by <user>`.
+    The dialog asks `data-entry-import-status` every 5 seconds (for up to 5 minutes) and reloads the page
+    once the import has run.
+  - in a project set to import immediately, or if the queue can't be written to, it runs straight away and
+    is logged as `API import: after data entry, by <user>`.
+
+  Either way the page reloads afterwards so the form shows the imported values. Saving a form that still
+  showed the old values would write them back over the import.
+
+Only users who can resolve imports are asked (View & Edit on every mapped instrument, or Project Design),
+since an import writes the mapped fields on all of the event's mapped instruments. An offer that isn't
+answered within 15 minutes is dropped. The project setting **Data entry** (`data-entry-imports`) can turn
+the question off, and then data entry saves never import.
+
 ## Refresh all records
 
 Re-runs the import for every record, so mapped fields hold what the APIs say now: after a new data

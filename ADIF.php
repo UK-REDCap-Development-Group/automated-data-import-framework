@@ -22,6 +22,8 @@ require_once __DIR__ . '/classes/ProjectCleanup.php';
 require_once __DIR__ . '/classes/ApiSources.php';
 require_once __DIR__ . '/classes/Access.php';
 require_once __DIR__ . '/classes/AuditLog.php';
+require_once __DIR__ . '/classes/ImportDataEntry.php';
+require_once __DIR__ . '/classes/ImportTriggers.php';
 
 class ADIF extends AbstractExternalModule
 {
@@ -41,6 +43,8 @@ class ADIF extends AbstractExternalModule
     use ApiSources;
     use Access;
     use AuditLog;
+    use ImportDataEntry;
+    use ImportTriggers;
 
     // What a user can do with ADIF in a project (see classes/Access.php); each level includes the ones below
     const ACCESS_NONE = 0;     // no ADIF pages or menu links
@@ -171,6 +175,24 @@ class ADIF extends AbstractExternalModule
                 $this->includeJS('js/data_sources.js');
             }
         }
+
+        // After a data entry save, asks whether to import (see ImportDataEntry). Only on the pages a
+        // save leads to, and only once per save.
+        if ($project_id) {
+            $this->dataEntryImportOfferScript($project_id);
+        }
+    }
+
+    // A data entry form was saved (a survey's save is left to redcap_survey_complete): rather than import
+    // on every save, which would overwrite fields staff just corrected by hand, ADIF asks on the next
+    // page whether to import (see ImportDataEntry)
+    function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id = null, $survey_hash = null,
+                                $response_id = null, $repeat_instance = 1)
+    {
+        if (!empty($survey_hash)) {
+            return;
+        }
+        $this->offerDataEntryImport($project_id, $record, $instrument, $event_id, $repeat_instance);
     }
 
     // Which ADIF menu links a user sees. The framework also refuses a linked page's URL to users this
@@ -293,6 +315,22 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'error', 'message' => 'The queued imports couldn\'t be run: ' . $e->getMessage()];
                 }
 
+            case 'import-after-data-entry':
+                // "Import" in the question asked after a data entry save (see ImportDataEntry). The record,
+                // event and instance come from the offer in the user's session; the token only picks it.
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
+                }
+                return $this->runDataEntryImport($project_id, $payload['token'] ?? '');
+
+            case 'data-entry-import-status':
+                // Whether an import queued from that question has run yet (see ImportDataEntry). Only
+                // imports this user queued, from their session, can be asked about.
+                if (!$project_id || !$this->canResolveImports($project_id)) {
+                    return ['status' => 'error', 'message' => self::$resolveImportsDenied];
+                }
+                return $this->dataEntryImportStatus($project_id, $payload['queue_id'] ?? '');
+
             case 'dismiss-import':
                 // Clears (or, with 'undo', restores) a run's "Needs attention" flag, for failures nobody
                 // intends to fix (see ImportStatus::dismissImportRun). Same users as retrying.
@@ -349,8 +387,20 @@ class ADIF extends AbstractExternalModule
     // Each endpoint hit and what it returned goes to the module log, and a summary to the project's
     // Logging page (see ImportLog). Failed runs and the fields they left empty are then visible on the
     // Imports page (see ImportStatus and pages/Imports.php), where they can also be re-run by hand.
+    // When the Mapping page's Import Triggers name instruments, only their completion imports (see
+    // ImportTriggers); otherwise any survey completed in an event with mappings does.
     function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
     {
+        try {
+            if ($this->importTriggersConfigured($project_id)
+                && !$this->importTriggerMet($project_id, $record, $event_id, $instrument, $repeat_instance)) {
+                return;
+            }
+        } catch (\Throwable $e) {
+            error_log("ADIF: couldn't check the import triggers for record $record, so it isn't imported: " . $e->getMessage());
+            return;
+        }
+
         if ($this->importsRunInBackground($project_id)) {
             try {
                 if (!empty($this->importPlan($project_id, $event_id, $instrument, $repeat_instance)['requests'])) {

@@ -13,8 +13,9 @@ namespace UKModules\ADIF;
 //
 // The queue lives in the module log, like the runs themselves - appending an entry is atomic, so
 // surveys submitted at the same moment can't overwrite each other's place in it:
-//   "ADIF import queued"        one per survey submission: record, event_id, instrument,
-//                               repeat_instance and a queue_id
+//   "ADIF import queued"        one per survey submission, or per "Import" after a data entry save
+//                               (see ImportDataEntry): record, event_id, instrument, repeat_instance, a
+//                               queue_id, and for a data entry save requested_by (who chose to import)
 //   "ADIF import queue started" written before each attempt, so an import that dies partway (a PHP
 //                               fatal error, a killed process) is noticed; after $importQueueMaxAttempts
 //                               such starts it's given up on and logged as a failed run
@@ -30,6 +31,8 @@ trait ImportQueue
 
     // The summary's description for a queued run, as the run list shows it
     private static $importQueuedDescription = 'API import after survey completion (in the background)';
+    // ... and for one queued from a data entry save, followed by ", requested by <user>"
+    private static $importQueuedDataEntryDescription = 'API import after data entry (in the background)';
 
     // A queued import that has started this many times without finishing is given up on
     private static $importQueueMaxAttempts = 3;
@@ -50,8 +53,9 @@ trait ImportQueue
     }
 
     // Puts an import on the queue. Throws when the entry can't be written, so the caller can run the
-    // import straight away instead of losing it.
-    public function queueImport($projectId, $record, $eventId, $instrument, $repeatInstance)
+    // import straight away instead of losing it. $requestedBy: the user who chose to import after a data
+    // entry save (see ImportDataEntry); null for a survey submission.
+    public function queueImport($projectId, $record, $eventId, $instrument, $repeatInstance, $requestedBy = null)
     {
         try {
             $queueId = bin2hex(random_bytes(6));
@@ -66,17 +70,18 @@ trait ImportQueue
             'instrument' => $instrument,
             'repeat_instance' => $repeatInstance,
             'queue_id' => $queueId,
+            'requested_by' => $requestedBy,
         ], fn($value) => $value !== null && $value !== ''));
 
         return $queueId;
     }
 
     // The project's pending imports, oldest first: [queue_id, log_id, queued (unix time), record,
-    // event_id, instrument, repeat_instance, attempts]. $record limits them to one record.
+    // event_id, instrument, repeat_instance, requested_by, attempts]. $record limits them to one record.
     public function importQueuePending($projectId, $record = null, $limit = 500)
     {
         $sql = 'select q.log_id, q.timestamp, q.record, qi.value as queue_id,'
-            . ' e.value as event_id, i.value as instrument, r.value as repeat_instance'
+            . ' e.value as event_id, i.value as instrument, r.value as repeat_instance, b.value as requested_by'
             . ' from redcap_external_modules_log q'
             . ' join redcap_external_modules m on m.external_module_id = q.external_module_id'
             . ' and m.directory_prefix = ?'
@@ -84,6 +89,7 @@ trait ImportQueue
             . ' left join redcap_external_modules_log_parameters e on e.log_id = q.log_id and e.name = \'event_id\''
             . ' left join redcap_external_modules_log_parameters i on i.log_id = q.log_id and i.name = \'instrument\''
             . ' left join redcap_external_modules_log_parameters r on r.log_id = q.log_id and r.name = \'repeat_instance\''
+            . ' left join redcap_external_modules_log_parameters b on b.log_id = q.log_id and b.name = \'requested_by\''
             . ' where q.project_id = ? and q.message = ?'
             . ($record !== null ? ' and q.record = ?' : '')
             . ' and not exists (select 1 from redcap_external_modules_log d'
@@ -105,6 +111,7 @@ trait ImportQueue
                 'event_id' => is_numeric($row['event_id'] ?? null) ? (int) $row['event_id'] : null,
                 'instrument' => ($row['instrument'] ?? '') !== '' ? (string) $row['instrument'] : null,
                 'repeat_instance' => max(1, (int) ($row['repeat_instance'] ?? 1)),
+                'requested_by' => (string) ($row['requested_by'] ?? ''),
                 'attempts' => 0,
             ];
         }
@@ -254,7 +261,7 @@ trait ImportQueue
                     . ' a time limit, most likely - see the server\'s PHP error log), so ADIF stopped trying.'
                     . ' Retry it once the cause is fixed.'],
                 'repeat_instance' => $item['repeat_instance']];
-            $entries = $this->logImportRun(self::$importQueuedDescription, $projectId, $item['record'],
+            $entries = $this->logImportRun(self::importQueuedRunDescription($items), $projectId, $item['record'],
                 $item['event_id'], $item['instrument'], $summary);
             $this->markImportQueueDone($projectId, $item['record'], $queueIds, $entries, 'abandoned');
             return 'abandoned';
@@ -275,7 +282,7 @@ trait ImportQueue
         $summary['elapsed_ms'] = round((microtime(true) - $start) * 1000, 1);
         $summary['repeat_instance'] = $item['repeat_instance'];
 
-        $entries = $this->logImportRun(self::$importQueuedDescription, $projectId, $item['record'],
+        $entries = $this->logImportRun(self::importQueuedRunDescription($items), $projectId, $item['record'],
             $item['event_id'], $item['instrument'], $summary);
         $this->markImportQueueDone($projectId, $item['record'], $queueIds, $entries, 'ran');
 
@@ -295,6 +302,40 @@ trait ImportQueue
             $this->writeModuleLog(self::$importQueueDoneMessage, ['project_id' => $projectId, 'record' => $record,
                 'queue_id' => $queueId, 'run_id' => $runId, 'outcome' => $outcome]);
         }
+    }
+
+    // A queued run's description: a survey submission's, or, when someone chose to import after a data
+    // entry save (and no survey queued the same import), one naming who asked for it
+    private static function importQueuedRunDescription(array $items)
+    {
+        $requestedBy = array_values(array_filter(array_column($items, 'requested_by'), 'strlen'));
+        if (empty($requestedBy) || count($requestedBy) < count($items)) {
+            return self::$importQueuedDescription;
+        }
+        return self::$importQueuedDataEntryDescription . ', requested by ' . $requestedBy[0];
+    }
+
+    // How a queued import ended: null while it's still waiting (or running), otherwise ['outcome' =>
+    // 'ran' | 'abandoned', 'run_id' => the run it was logged as, or null]
+    public function importQueueOutcome($projectId, $queueId)
+    {
+        $rows = $this->importQueryRows(
+            'select o.value as outcome, r.value as run_id'
+            . ' from redcap_external_modules_log d'
+            . ' join redcap_external_modules m on m.external_module_id = d.external_module_id'
+            . ' and m.directory_prefix = ?'
+            . ' join redcap_external_modules_log_parameters q on q.log_id = d.log_id and q.name = \'queue_id\''
+            . ' and q.value = ?'
+            . ' left join redcap_external_modules_log_parameters o on o.log_id = d.log_id and o.name = \'outcome\''
+            . ' left join redcap_external_modules_log_parameters r on r.log_id = d.log_id and r.name = \'run_id\''
+            . ' where d.project_id = ? and d.message = ?'
+            . ' order by d.log_id desc limit 1',
+            [$this->getPrefix(), (string) $queueId, (int) $projectId, self::$importQueueDoneMessage]);
+        if (empty($rows)) {
+            return null;
+        }
+        return ['outcome' => (string) ($rows[0]['outcome'] ?? ''),
+            'run_id' => ($rows[0]['run_id'] ?? '') !== '' ? (string) $rows[0]['run_id'] : null];
     }
 
     // Queue entries that are the same import: record, event, instrument and instance

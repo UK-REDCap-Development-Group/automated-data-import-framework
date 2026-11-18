@@ -48,6 +48,9 @@ $apiFields = array_map(function ($apiField) {
 // The REDCap field chosen to supply each source's placeholders (see scripts/save_lookups.php)
 $savedLookups = $module->getProjectSetting('lookup-fields') ?: [];
 
+// Which instruments' completion starts an import (see classes/ImportTriggers.php, scripts/save_triggers.php)
+$importTriggers = $module->getImportTriggers($project_id);
+
 $projectTitle = \REDCap::getProjectTitle();
 ?>
 
@@ -75,6 +78,9 @@ $projectTitle = \REDCap::getProjectTitle();
 
     // { "<source>": { "<placeholder>": "<field>" } }
     let savedLookups = Object.assign({}, <?= json_encode((object) $savedLookups) ?>);
+
+    // { instruments: [...], mode: 'any' | 'all' }: which instruments' completion starts an import
+    let importTriggers = <?= json_encode($importTriggers) ?>;
 </script>
 
 <script>
@@ -836,7 +842,16 @@ $projectTitle = \REDCap::getProjectTitle();
                 </div>
             </a>
         </div>
+        <div class="col-md-3">
+            <a id="triggers-btn" class="center-home-sects">
+                <div class="center-home-sects">
+                    <span><i class="fas fa-bolt"></i></span><br>
+                    <h5>Import Triggers</h5>
+                </div>
+            </a>
+        </div>
     </div>
+    <p id="adif-trigger-summary" class="adif-trigger-summary" role="status"></p>
 
     <!-- List of forms and their fields -->
     <div id="instruments_list" class="row" style="flex-direction: column;">
@@ -846,6 +861,128 @@ $projectTitle = \REDCap::getProjectTitle();
         </div>
     </div>
 </div>
+
+<script>
+    // Import Triggers: which instruments' completion starts an import, for surveys and for the question
+    // asked after a data entry save. Saved by scripts/save_triggers.php; see classes/ImportTriggers.php.
+    function adifEscape(value) {
+        const div = document.createElement('div');
+        div.textContent = value === null || value === undefined ? '' : String(value);
+        return div.innerHTML;
+    }
+
+    function triggerSummaryHtml(triggers) {
+        if (!triggers.instruments.length) {
+            return '<b>Imports start</b> when any survey in an event with mappings is completed. '
+                + 'Use <b>Import Triggers</b> to choose the instruments that start them.';
+        }
+        const names = triggers.instruments.map(form => '<b>' + adifEscape(instruments[form] || form) + '</b>');
+        const list = names.length === 1 ? names[0]
+            : (triggers.mode === 'all' ? 'all of ' : 'any of ') + names.join(', ');
+        return '<b>Imports start</b> when ' + list + (names.length > 1 && triggers.mode === 'all' ? ' are' : ' is')
+            + ' completed.';
+    }
+
+    function renderTriggerSummary() {
+        document.getElementById('adif-trigger-summary').innerHTML = triggerSummaryHtml(importTriggers);
+    }
+
+    // Forms holding a mapped field, and forms holding a lookup field, so the list can say which is which
+    function triggerFormTags() {
+        const tags = {};
+        const add = (form, tag) => {
+            tags[form] = tags[form] || new Set();
+            tags[form].add(tag);
+        };
+        Object.entries(mappings || {}).forEach(([form, fields]) => {
+            if (Object.values(fields || {}).some(config => config && config.mapping)) add(form, 'mapped fields');
+        });
+        const formOf = {};
+        Object.entries(dictionary).forEach(([form, fields]) => Object.keys(fields).forEach(field => { formOf[field] = form; }));
+        Object.values(savedLookups).forEach(placeholders => Object.values(placeholders || {}).forEach(field => {
+            if (formOf[field]) add(formOf[field], 'lookup field');
+        }));
+        return tags;
+    }
+
+    function openImportTriggers() {
+        const built = buildModal();
+        if (!built) return;
+        const {modalOverlay, modalBox} = built;
+        const disabled = CAN_EDIT ? '' : ' disabled';
+        const tags = triggerFormTags();
+
+        let rows = '';
+        Object.entries(instruments).forEach(([form, label], i) => {
+            const checked = importTriggers.instruments.includes(form) ? ' checked' : '';
+            const formTags = Array.from(tags[form] || []).map(tag => `<span class="adif-trigger-tag">${tag}</span>`).join(' ');
+            rows += `<tr class="${i % 2 ? 'odd' : 'even'}"><td style="width: 100% !important;">
+                <label class="checkbox-option"><input type="checkbox" name="trigger-select" value="${adifEscape(form)}"${checked}${disabled}>
+                ${adifEscape(label)} ${formTags}</label></td></tr>`;
+        });
+
+        modalBox.innerHTML = `
+            <h2>Import Triggers</h2>
+            <p>Choose the instruments whose completion starts an import: a survey when it's submitted, and a data
+                entry form when it's saved as <b>Complete</b> (ADIF then asks before importing).</p>
+            <div class="adif-trigger-mode">
+                <label><input type="radio" name="trigger-mode" value="any"${importTriggers.mode !== 'all' ? ' checked' : ''}${disabled}>
+                    When <b>any</b> of the selected instruments is completed</label><br>
+                <label><input type="radio" name="trigger-mode" value="all"${importTriggers.mode === 'all' ? ' checked' : ''}${disabled}>
+                    When <b>all</b> of the selected instruments are completed (within the same event)</label>
+            </div>
+            <div class="modal-form-selection-grid" style="max-height: 50vh; overflow-y: auto;">
+                <table class="dataTable cell-border no-footer">${rows}</table>
+            </div>
+            <p class="adif-trigger-note">With none selected, any survey completed in an event with mappings starts an
+                import, and saving a data entry form with mapped or lookup fields asks. Imports started by hand on the
+                Import Status page (retries, Import all, Refresh all records) don't depend on these.</p>
+            <div class="modal-actions">
+                ${CAN_EDIT ? '<button id="triggers_save" class="selectA_btn">Save Changes</button>' : ''}
+                <button id="triggers_close" class="close-button">${CAN_EDIT ? 'Cancel' : 'Close'}</button>
+            </div>`;
+        modalOverlay.appendChild(modalBox);
+        document.body.appendChild(modalOverlay);
+
+        const closeModal = () => modalOverlay.parentNode && modalOverlay.parentNode.removeChild(modalOverlay);
+        document.getElementById('triggers_close').addEventListener('click', closeModal);
+        modalOverlay.addEventListener('click', event => { if (event.target === modalOverlay) closeModal(); });
+        if (!CAN_EDIT) return;
+
+        document.getElementById('triggers_save').addEventListener('click', () => {
+            const selected = Array.from(modalBox.querySelectorAll('input[name="trigger-select"]:checked')).map(cb => cb.value);
+            const mode = (modalBox.querySelector('input[name="trigger-mode"]:checked') || {}).value || 'any';
+            const button = document.getElementById('triggers_save');
+            button.disabled = true;
+            $.ajax({
+                url: "<?= $module->getUrl('scripts/save_triggers.php') ?>",
+                method: "POST",
+                dataType: "json",
+                data: {
+                    pid: <?= json_encode($_GET['pid'] ?? $project_id ?? 0) ?>,
+                    redcap_csrf_token: <?= json_encode($csrf) ?>,
+                    instruments: JSON.stringify(selected),
+                    mode: mode
+                },
+                success: result => {
+                    importTriggers = result.triggers || {instruments: [], mode: 'any'};
+                    renderTriggerSummary();
+                    closeModal();
+                },
+                error: (xhr, status, error) => {
+                    console.error('Error saving import triggers:', error, xhr.responseText);
+                    alert('The import triggers could not be saved. Please try again.');
+                    button.disabled = false;
+                }
+            });
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        renderTriggerSummary();
+        document.getElementById('triggers-btn').addEventListener('click', openImportTriggers);
+    });
+</script>
 
 <script>
     /* Create the basic modal structure */

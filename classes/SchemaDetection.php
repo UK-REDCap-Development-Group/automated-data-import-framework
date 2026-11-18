@@ -36,8 +36,9 @@ trait SchemaDetection
         $apiKey = trim((string) $apiKey);
         $probePath = trim((string) $probePath);
 
-        if (!preg_match('#^https?://#i', $baseUrl)) {
-            throw new \Exception('Enter the source\'s URL, starting with http:// or https://, before detecting its schema.');
+        if (!preg_match('#^https://#i', $baseUrl)) {
+            throw new \Exception('Enter the source\'s URL, starting with https://, before detecting its schema.'
+                . ' ADIF only connects to APIs over HTTPS.');
         }
 
         $tried = [];

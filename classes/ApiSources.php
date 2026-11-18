@@ -41,7 +41,7 @@ trait ApiSources
     // Every configured source, in order, as the Data Sources page shows it:
     //   index, url, has_key (the key itself is never returned), values ([key => value] for every
     //   sub-setting but api-key), field_count, schema_error (null, or why the saved schema can't be
-    //   read), mapped ([field => [form, path, endpoint]] for mapped fields that read from it) and
+    //   read), url_error (null, or why ADIF won't call the URL: it isn't https), mapped ([field => [form, path, endpoint]] for mapped fields that read from it) and
     //   lookups ([placeholder => REDCap field] chosen on the Mapping page)
     // Includes sources with no URL yet (the dialog allows them), which offer nothing until one is set.
     public function getApiSourceConfigs()
@@ -69,6 +69,13 @@ trait ApiSources
                 }
             }
 
+            // A source saved before ADIF required HTTPS, or through the configuration dialog, which doesn't
+            // check: imports refuse to call it (see Proxy::sendApiRequest), so the page says so
+            $urlError = $url !== '' && !preg_match('#^https://#i', $url)
+                ? 'This source\'s URL doesn\'t start with https://, so ADIF won\'t call it: imports from it fail until'
+                    . ' it\'s changed to the https:// address.'
+                : null;
+
             $sources[] = [
                 'index' => $index,
                 'url' => $url,
@@ -76,6 +83,7 @@ trait ApiSources
                 'values' => $values,
                 'field_count' => $url === '' ? 0 : count($this->apiFieldsForSource($index, $url, $schema)),
                 'schema_error' => $schemaError,
+                'url_error' => $urlError,
                 'mapped' => $mapped[$index] ?? [],
                 'lookups' => is_array($lookups[$index] ?? null) ? $lookups[$index] : [],
             ];
@@ -366,9 +374,14 @@ trait ApiSources
             throw new \Exception('Enter the API\'s URL.');
         }
         // Deliberately loose (not FILTER_VALIDATE_URL, which rejects real API addresses with brackets or
-        // underscores in them): a scheme, a host, and no spaces
-        if (!preg_match('#^https?://[^\s/?\#]+[^\s]*$#i', $url)) {
-            throw new \Exception("\"$url\" isn't a web address. It should start with https:// (or http://).");
+        // underscores in them): https, a host, and no spaces. HTTPS only, since requests can carry record
+        // values (see Proxy::sendApiRequest, which refuses anything else too).
+        if (preg_match('#^http://#i', $url)) {
+            throw new \Exception("ADIF only connects to APIs over HTTPS, so record values are never sent unencrypted."
+                . " Use the https:// address (\"" . self::maskApiUrl(preg_replace('#^http://#i', 'https://', $url)) . "\").");
+        }
+        if (!preg_match('#^https://[^\s/?\#]+[^\s]*$#i', $url)) {
+            throw new \Exception("\"$url\" isn't a web address. It should start with https://.");
         }
         $values['api'] = $url;
 
