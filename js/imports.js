@@ -23,9 +23,20 @@
         return escapeHtml(value).replace(/\n/g, '<br>');
     }
 
-    function bypassCache() {
-        return $('#adif-imp-bypass').is(':checked');
+    // Asks in the page's confirmation modal (window.ADIFImportsConfirm, from pages/Imports.php), which
+    // resolves to { confirmed, checked }; the browser's confirm only if the page didn't provide it
+    function ask(options) {
+        if (typeof window.ADIFImportsConfirm === 'function') {
+            return window.ADIFImportsConfirm(options);
+        }
+        return Promise.resolve({
+            confirmed: window.confirm(options.title + '\n\n' + options.message),
+            checked: !!(options.checkbox && options.checkbox.checked)
+        });
     }
+
+    // A retry's "Skip stored data" choice, asked with each retry and remembered for the next one on the page
+    let skipStoredData = true;
 
     // Each run in the table is a <tbody class="adif-imp-run" data-run-id> holding its summary row and its
     // details row (pages/Imports.php); $details below is that <tbody>.
@@ -125,11 +136,11 @@
         }
     }
 
-    function retryRun(runId, $details, $button) {
+    function retryRun(runId, $details, $button, bypassCache) {
         const originalText = $button.text();
         $button.prop('disabled', true).text('Retrying…');
 
-        return settings.module.ajax('retry-import', { run_id: runId, bypass_cache: bypassCache() })
+        return settings.module.ajax('retry-import', { run_id: runId, bypass_cache: bypassCache })
             .then(function (response) {
                 renderResult($details, response || { status: 'error', message: 'No response from the server.' });
                 return response;
@@ -152,10 +163,24 @@
         if (!runId || $button.prop('disabled')) {
             return;
         }
-        if (!confirm("Re-run this import? The fields it maps will be overwritten with the API's current values.")) {
-            return;
-        }
-        retryRun(runId, $button.closest('.adif-imp-run'), $button);
+        const $details = $button.closest('.adif-imp-run');
+        const record = $.trim($details.find('.adif-imp-rec').first().text());
+        ask({
+            title: 'Retry this import?',
+            message: 'Re-runs the import' + (record ? ' for record ' + record : '') + ', for the same event, instrument and'
+                + " instance. The fields it maps are overwritten with the API's current values.",
+            confirmLabel: 'Retry import',
+            checkbox: {
+                label: 'Skip stored data and call the APIs',
+                hint: "Recommended after an outage, so data stored while the API was down isn't reused.",
+                checked: skipStoredData
+            }
+        }).then(function (answer) {
+            if (answer.confirmed) {
+                skipStoredData = answer.checked;
+                retryRun(runId, $details, $button, answer.checked);
+            }
+        });
     });
 
     // Dismissing: the run stops counting as needing attention (see ImportStatus::dismissImportRun).
@@ -168,11 +193,20 @@
         if (!runId || $button.prop('disabled')) {
             return;
         }
-        if (!confirm('Dismiss this run? It will stop being flagged as needing attention. Its fields stay empty, '
-                + 'and you can undo this later.')) {
-            return;
-        }
+        ask({
+            title: 'Dismiss this run?',
+            message: 'It stops being flagged as needing attention, and Retry all failed leaves it alone. Its fields'
+                + ' stay empty, and nothing about the record changes. You can undo this later.'
+                + (reason ? '\n\nReason: ' + reason : ''),
+            confirmLabel: 'Dismiss run'
+        }).then(function (answer) {
+            if (answer.confirmed) {
+                dismissRun(runId, $details, reason);
+            }
+        });
+    });
 
+    function dismissRun(runId, $details, reason) {
         $details.find('.adif-imp-retry-row button').prop('disabled', true);
         settings.module.ajax('dismiss-import', { run_id: runId, reason: reason })
             .then(function (response) {
@@ -194,7 +228,7 @@
                 resultPanel($details).html('<div class="adif-alert adif-alert-error">'
                     + multiline((error && error.message) || String(error)) + '</div>');
             });
-    });
+    }
 
     $(document).on('click', '.adif-imp-undismiss', function () {
         const $button = $(this);
@@ -235,15 +269,23 @@
     }
 
     // Retry all failed isn't wired here: it's a plain form that queues the retries for the cron (see
-    // classes/ImportRetryAll.php), so a long list can't hold the browser up. Its "Skip stored data"
-    // checkbox (#adif-imp-bypass) is still the one the per-run Retry buttons read.
+    // classes/ImportRetryAll.php), so a long list can't hold the browser up. It asks in the same modal,
+    // through its data-confirm attribute.
 
     // "Never imported" (pages/Imports.php): the first import for one place, from its row's button, sent
     // as 'import-unattempted' (see ImportStatus::runFirstImport)
-    const neverUnits = {};
-    readJson('adif-imp-never-units').forEach(function (unit) {
-        neverUnits[unit.key] = unit;
-    });
+    // Read when first needed, not when this file loads: it loads at the top of the page (from
+    // ADIF::redcap_every_page_top), before the page's content - and this JSON - exists
+    let neverUnits = null;
+    function neverUnit(key) {
+        if (neverUnits === null) {
+            neverUnits = {};
+            readJson('adif-imp-never-units').forEach(function (unit) {
+                neverUnits[unit.key] = unit;
+            });
+        }
+        return neverUnits[key];
+    }
 
     // Shows a first import's outcome in its row, when the row is on the page
     function renderFirstImport(unitKey, response) {
@@ -303,14 +345,20 @@
     }
 
     $(document).on('click', '.adif-imp-import-one', function () {
-        const unit = neverUnits[$(this).attr('data-unit-key')];
+        const unit = neverUnit($(this).attr('data-unit-key'));
         if (!unit || $(this).prop('disabled')) {
             return;
         }
-        if (!confirm('Run the first import for record ' + unit.record + '? Its empty mapped fields will be filled from the APIs.')) {
-            return;
-        }
-        runFirstImport(unit);
+        ask({
+            title: 'Import record ' + unit.record + '?',
+            message: 'Runs its first import now, while you wait. Its empty mapped fields are filled from the APIs, and'
+                + ' the run is listed in the run table like any other.',
+            confirmLabel: 'Import'
+        }).then(function (answer) {
+            if (answer.confirmed) {
+                runFirstImport(unit);
+            }
+        });
     });
 
     // "Run queued imports now" (pages/Imports.php): works through the background queue without
@@ -318,12 +366,21 @@
     // request runs a short batch; it's sent again while imports remain and the last batch made progress.
     $(document).on('click', '#adif-imp-run-queue', function () {
         const $button = $(this);
-        const $progress = $('#adif-imp-queue-progress');
-        if (!confirm('Run the queued imports now? Each one calls the APIs its mappings use and fills the record\'s fields.'
-                + ' Keep this page open until it finishes.')) {
-            return;
-        }
+        ask({
+            title: 'Run the queued imports now?',
+            message: 'Runs them from this page instead of waiting for the cron, a few at a time. Each one calls the APIs'
+                + " its mappings use and fills the record's fields.\n\nKeep this page open until it finishes; progress"
+                + ' shows in the activity strip.',
+            confirmLabel: 'Run them now'
+        }).then(function (answer) {
+            if (answer.confirmed) {
+                runQueueNow($button);
+            }
+        });
+    });
 
+    function runQueueNow($button) {
+        const $progress = $('#adif-imp-queue-progress');
         $button.prop('disabled', true);
         const totals = { ran: 0, attention: 0, abandoned: 0 };
         const summary = function (remaining, busy) {
@@ -367,5 +424,5 @@
                 });
         };
         step();
-    });
+    }
 })();

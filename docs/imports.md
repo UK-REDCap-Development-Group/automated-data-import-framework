@@ -25,10 +25,18 @@ Top to bottom, so the run table stays in view and the bulk actions stay out of t
   record lookup and an **Actions** menu.
 - **Actions menu** (users who can retry, or refresh): Retry all failed, Import never-imported
   records, Run queued imports now and, for Design users, Refresh all records. Each item says in one
-  line what it does, or why it's unavailable (already running, nothing to do). The "Retries skip stored
-  data" checkbox at its top applies to Retry all and to the per-run Retry buttons. **Refresh all
-  records** opens a confirmation dialog with the off-peak hours, the server's limit and the stored-data
+  line what it does, or why it's unavailable (already running, nothing to do). **Refresh all
+  records** opens its own dialog with the off-peak hours, the server's limit and the stored-data
   choice; the long explanation lives there instead of on the page. Read Only users get no menu.
+- **Confirmations are modals, never the browser's `confirm()`:** every action on the page asks in the
+  same dialog as the refresh (`#adif-imp-confirm`) - Retry all failed, Import never-imported records,
+  Run queued imports now, each job's Cancel, and the per-run Retry and Dismiss and per-place Import
+  buttons. The page's script fills it in from `window.ADIFImportsConfirm(options)` (title, message,
+  button labels, a red confirm for cancelling a job, and an optional checkbox), which `js/imports.js`
+  calls too; a form opts in with a `data-confirm` JSON attribute (`adif_imp_confirm_attr()`), and its
+  checkbox's answer is posted as a hidden field. **Skip stored data and call the APIs** is asked in
+  the Retry all and per-run Retry confirmations (ticked by default; a per-run choice is remembered
+  for the next retry on the page).
 - **One line of description**, with "How outcomes are decided" folded away beneath it.
 - **Notices** from the last start or cancel (`?refresh=`, `?retryall=`, `?importall=`), then the
   **activity strip** (`#adif-imp-activity`, where those redirects land): one row per background job

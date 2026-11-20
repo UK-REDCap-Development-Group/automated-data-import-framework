@@ -122,13 +122,6 @@ a.adif-imp-chip:focus {
     margin: 0;
 }
 
-.adif-imp-actions-menu .adif-imp-bypass {
-    display: block;
-    padding: 6px 10px 8px;
-    border-bottom: 1px solid #eef1f3;
-    margin-bottom: 4px;
-}
-
 .adif-imp-menu-item {
     display: flex;
     flex-direction: column;
@@ -316,6 +309,17 @@ a.adif-imp-chip:focus {
     border-radius: 10px;
     box-shadow: 0 20px 48px rgba(20, 30, 40, 0.28);
     color: #1f2933;
+}
+
+/* Hidden parts of a dialog stay hidden whatever their display (the checkbox row is a flex box) */
+.adif-imp-dialog [hidden] {
+    display: none !important;
+}
+
+.adif-imp-confirm-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .adif-imp-dialog::backdrop {

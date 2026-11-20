@@ -366,11 +366,20 @@ function adif_imp_ago($time)
     return date('Y-m-d H:i', (int) $time);
 }
 
-// A background job's Cancel button: a form posting $field=cancel back to this page (see the top of it)
-function adif_imp_cancel_form($module, $field, $record, $confirm)
+// The data-confirm attribute that makes a form ask first, in the page's confirmation modal (see the
+// script at the end): title, message (paragraphs split by blank lines), and optionally confirmLabel,
+// cancelLabel, tone ('danger') and checkbox ([name, label, hint, checked], posted as name=1 when ticked)
+function adif_imp_confirm_attr(array $confirm)
+{
+    return ' data-confirm="' . adif_imp_h(json_encode($confirm)) . '"';
+}
+
+// A background job's Cancel button: a form posting $field=cancel back to this page (see the top of it),
+// confirmed in the modal first
+function adif_imp_cancel_form($module, $field, $record, array $confirm)
 {
     return '<form method="post" class="adif-imp-job-cancel" action="' . adif_imp_h($module->getUrl('pages/Imports.php')) . '"'
-        . ' onsubmit="return confirm(' . adif_imp_h(json_encode($confirm)) . ');">'
+        . adif_imp_confirm_attr($confirm + ['cancelLabel' => 'Keep it running', 'tone' => 'danger']) . '>'
         . '<input type="hidden" name="redcap_csrf_token" value="' . adif_imp_h($module->getCSRFToken()) . '">'
         . '<input type="hidden" name="' . adif_imp_h($field) . '" value="cancel">'
         . '<input type="hidden" name="record" value="' . adif_imp_h($record) . '">'
@@ -450,20 +459,22 @@ function adif_imp_instrument($run)
                     </button>
                     <div class="adif-imp-actions-menu" id="adif-imp-actions-menu" hidden>
                         <?php if ($canRetry): ?>
-                            <label class="adif-imp-bypass" for="adif-imp-bypass" title="On (recommended): a retry calls the APIs even for requests the cache could answer, so data stored during an outage isn't reused. Off: stored responses are reused where they exist.">
-                                <input type="checkbox" id="adif-imp-bypass" name="bypass_cache" value="1" form="adif-imp-retry-all-form" checked>
-                                Retries skip stored data and call the APIs
-                            </label>
-
                             <?php if (!$retryActive && !empty($retryTargets)): ?>
                                 <?php
-                                $retryConfirm = 'Re-run ' . count($retryTargets) . ' failed import' . (count($retryTargets) === 1 ? '' : 's')
-                                    . ($hiddenTargets > 0 ? " ($hiddenTargets not on this page)" : '')
-                                    . '? The fields they map will be overwritten with the APIs\' current values. They run in the background,'
-                                    . ' starting within a minute or so; you can leave this page.';
+                                $retryConfirm = [
+                                    'title' => 'Retry ' . count($retryTargets) . ' failed import' . (count($retryTargets) === 1 ? '' : 's') . '?',
+                                    'message' => 'Re-runs every import whose latest run needs attention'
+                                        . ($recordFilter !== '' ? ' for record ' . $recordFilter : '')
+                                        . ($hiddenTargets > 0 ? ", including $hiddenTargets not on this page" : '')
+                                        . '. The fields they map are overwritten with the APIs\' current values.'
+                                        . "\n\nThey run in the background, starting within a minute or so. You can leave this page;"
+                                        . ' progress shows above the run table.',
+                                    'confirmLabel' => 'Queue retries',
+                                    'checkbox' => ['name' => 'bypass_cache', 'label' => 'Skip stored data and call the APIs', 'checked' => true,
+                                        'hint' => 'Recommended after an outage, so data stored while the API was down isn\'t reused.'],
+                                ];
                                 ?>
-                                <form method="post" id="adif-imp-retry-all-form" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                                      onsubmit="return confirm(<?= adif_imp_h(json_encode($retryConfirm)) ?>);">
+                                <form method="post" id="adif-imp-retry-all-form" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"<?= adif_imp_confirm_attr($retryConfirm) ?>>
                                     <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
                                     <input type="hidden" name="adif_retry_action" value="start">
                                     <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
@@ -481,12 +492,18 @@ function adif_imp_instrument($run)
 
                             <?php if (!$importAllActive && !empty($neverImportable)): ?>
                                 <?php
-                                $importAllConfirm = 'Run the first import for ' . count($neverImportable) . ' place'
-                                    . (count($neverImportable) === 1 ? '' : 's') . '? Each one calls the APIs its mappings use and fills the'
-                                    . ' empty fields. They run in the background, starting within a minute or so; you can leave this page.';
+                                $importAllConfirm = [
+                                    'title' => 'Import ' . count($neverImportable) . ' never-imported place' . (count($neverImportable) === 1 ? '' : 's') . '?',
+                                    'message' => 'Runs the first import for every place on the Never imported list that has the values its'
+                                        . ' lookups need, in ' . $neverRecordCount . ' record' . ($neverRecordCount === 1 ? '' : 's')
+                                        . ($recordFilter !== '' ? ' (record ' . $recordFilter . ' only)' : '')
+                                        . '. Each one calls the APIs its mappings use and fills the empty fields.'
+                                        . "\n\nThey run in the background, starting within a minute or so. You can leave this page;"
+                                        . ' progress shows above the run table.',
+                                    'confirmLabel' => 'Queue imports',
+                                ];
                                 ?>
-                                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                                      onsubmit="return confirm(<?= adif_imp_h(json_encode($importAllConfirm)) ?>);">
+                                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"<?= adif_imp_confirm_attr($importAllConfirm) ?>>
                                     <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
                                     <input type="hidden" name="adif_import_all_action" value="start">
                                     <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
@@ -589,8 +606,11 @@ function adif_imp_instrument($run)
                 . ($minutesLeft !== null ? ' · roughly ' . ($minutesLeft < 90 ? $minutesLeft . ' min' : round($minutesLeft / 60, 1) . ' h') . ' of off-peak time to go' : '')
                 . ($refreshJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($refreshJob['cancelled_by'] ?? '?') : '')
                 . ($refreshJob['status'] === 'failed' ? ' · ' . adif_imp_h($refreshJob['message'] ?? '') : ''),
-            'cancel' => $refreshActive && $canRefresh ? adif_imp_cancel_form($module, 'adif_refresh_action', '',
-                'Cancel the refresh? Imports it has already run stay; the rest of the records are left as they are.') : '',
+            'cancel' => $refreshActive && $canRefresh ? adif_imp_cancel_form($module, 'adif_refresh_action', '', [
+                'title' => 'Cancel the refresh?',
+                'message' => 'The imports it has already run stay. The records it hasn\'t reached yet are left as they are.',
+                'confirmLabel' => 'Cancel refresh',
+            ]) : '',
         ];
     }
 
@@ -615,8 +635,11 @@ function adif_imp_instrument($run)
                 . ' · requested by ' . adif_imp_h($retryJob['requested_by']) . ' ' . adif_imp_h(adif_imp_ago($retryJob['requested_at']))
                 . ($retryJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($retryJob['cancelled_by'] ?? '?') : '')
                 . ($retryJob['status'] === 'failed' ? ' · ' . adif_imp_h($retryJob['message'] ?? '') : ''),
-            'cancel' => $retryActive ? adif_imp_cancel_form($module, 'adif_retry_action', $recordFilter,
-                'Cancel retry all? The retries already run stay.') : '',
+            'cancel' => $retryActive ? adif_imp_cancel_form($module, 'adif_retry_action', $recordFilter, [
+                'title' => 'Cancel retry all?',
+                'message' => 'The retries it has already run stay. The rest keep their Needs attention flag, and can be retried later.',
+                'confirmLabel' => 'Cancel retry all',
+            ]) : '',
         ];
     }
 
@@ -641,8 +664,11 @@ function adif_imp_instrument($run)
                 . ' · requested by ' . adif_imp_h($importAllJob['requested_by']) . ' ' . adif_imp_h(adif_imp_ago($importAllJob['requested_at']))
                 . ($importAllJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($importAllJob['cancelled_by'] ?? '?') : '')
                 . ($importAllJob['status'] === 'failed' ? ' · ' . adif_imp_h($importAllJob['message'] ?? '') : ''),
-            'cancel' => $importAllActive ? adif_imp_cancel_form($module, 'adif_import_all_action', $recordFilter,
-                'Cancel import all? The imports already run stay.') : '',
+            'cancel' => $importAllActive ? adif_imp_cancel_form($module, 'adif_import_all_action', $recordFilter, [
+                'title' => 'Cancel the import?',
+                'message' => 'The imports it has already run stay. The places it hasn\'t reached yet stay on the Never imported list.',
+                'confirmLabel' => 'Cancel import',
+            ]) : '',
         ];
     }
     ?>
@@ -1044,6 +1070,30 @@ function adif_imp_instrument($run)
         </details>
     <?php endif; ?>
 
+    <?php if ($canRetry || $canRefresh): ?>
+        <?php // The confirmation modal every action on the page asks in: filled in by the script below ?>
+        <dialog class="adif-imp-dialog" id="adif-imp-confirm" aria-labelledby="adif-imp-confirm-title">
+            <form method="dialog">
+                <div class="adif-imp-dialog-head">
+                    <h4 id="adif-imp-confirm-title"></h4>
+                    <button type="submit" value="cancel" class="adif-imp-dialog-close" aria-label="Close">
+                        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8"></path></svg>
+                    </button>
+                </div>
+                <div class="adif-imp-confirm-body"></div>
+                <label class="adif-imp-dialog-check" hidden>
+                    <input type="checkbox" id="adif-imp-confirm-check">
+                    <span><span class="adif-imp-confirm-check-label"></span>
+                        <small class="adif-imp-confirm-check-hint"></small></span>
+                </label>
+                <div class="adif-imp-dialog-buttons">
+                    <button type="submit" value="cancel" class="btn btn-defaultrc btn-sm adif-imp-confirm-cancel">Cancel</button>
+                    <button type="submit" value="ok" class="btn btn-primaryrc btn-sm adif-imp-confirm-ok">Continue</button>
+                </div>
+            </form>
+        </dialog>
+    <?php endif; ?>
+
     <?php if ($canRefresh && !$refreshActive): ?>
         <dialog class="adif-imp-dialog" id="adif-imp-refresh-dialog" aria-labelledby="adif-imp-refresh-title">
             <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>">
@@ -1081,8 +1131,9 @@ function adif_imp_instrument($run)
 </div>
 
 <script>
-    // The Actions menu, the refresh dialog, and the collapsed panels (Never imported, Queued imports)
-    // opened by the header's chips. Plain DOM, so they work for every user.
+    // The Actions menu, the confirmation modal every action asks in, the refresh dialog, and the
+    // collapsed panels (Never imported, Queued imports) opened by the header's chips. Plain DOM, so they
+    // work for every user.
     (function () {
         var toggle = document.getElementById('adif-imp-actions-toggle');
         var menu = document.getElementById('adif-imp-actions-menu');
@@ -1122,6 +1173,96 @@ function adif_imp_instrument($run)
                 });
             }
         }
+
+        // ADIFImportsConfirm(options): asks in the confirmation modal and resolves to { confirmed, checked }.
+        // options: title, message (paragraphs split by blank lines; plain text), confirmLabel, cancelLabel,
+        // tone ('danger' for a red confirm button), checkbox ({ label, hint, checked }). js/imports.js asks
+        // through it too. A browser without <dialog> gets the browser's own confirm instead.
+        var confirmDialog = document.getElementById('adif-imp-confirm');
+        function ask(options) {
+            options = options || {};
+            if (!confirmDialog || typeof confirmDialog.showModal !== 'function') {
+                var ok = window.confirm((options.title ? options.title + '\n\n' : '') + (options.message || ''));
+                return Promise.resolve({ confirmed: ok, checked: !!(options.checkbox && options.checkbox.checked) });
+            }
+            var opener = document.activeElement;
+            setMenu(false);
+
+            confirmDialog.querySelector('#adif-imp-confirm-title').textContent = options.title || 'Are you sure?';
+            var body = confirmDialog.querySelector('.adif-imp-confirm-body');
+            body.textContent = '';
+            String(options.message || '').split(/\n\s*\n/).forEach(function (text) {
+                if (text.trim() !== '') {
+                    var paragraph = document.createElement('p');
+                    paragraph.textContent = text.trim();
+                    body.appendChild(paragraph);
+                }
+            });
+
+            var checkLabel = confirmDialog.querySelector('.adif-imp-dialog-check');
+            var check = confirmDialog.querySelector('#adif-imp-confirm-check');
+            checkLabel.hidden = !options.checkbox;
+            if (options.checkbox) {
+                checkLabel.querySelector('.adif-imp-confirm-check-label').textContent = options.checkbox.label || '';
+                checkLabel.querySelector('.adif-imp-confirm-check-hint').textContent = options.checkbox.hint || '';
+                check.checked = !!options.checkbox.checked;
+            }
+
+            var okButton = confirmDialog.querySelector('.adif-imp-confirm-ok');
+            var cancelButton = confirmDialog.querySelector('.adif-imp-confirm-cancel');
+            okButton.textContent = options.confirmLabel || 'Continue';
+            okButton.className = 'btn btn-sm adif-imp-confirm-ok ' + (options.tone === 'danger' ? 'btn-danger' : 'btn-primaryrc');
+            cancelButton.textContent = options.cancelLabel || 'Cancel';
+
+            return new Promise(function (resolve) {
+                confirmDialog.returnValue = '';
+                confirmDialog.addEventListener('close', function onClose() {
+                    confirmDialog.removeEventListener('close', onClose);
+                    // Back to the button that asked, or to the Actions button when that was in the menu
+                    var back = opener && opener.offsetParent !== null ? opener : toggle;
+                    if (back && typeof back.focus === 'function') {
+                        back.focus();
+                    }
+                    resolve({ confirmed: confirmDialog.returnValue === 'ok', checked: check.checked });
+                });
+                confirmDialog.showModal();
+                // A destructive action starts on its safe choice
+                (options.tone === 'danger' ? cancelButton : okButton).focus();
+            });
+        }
+        window.ADIFImportsConfirm = ask;
+
+        // A form with data-confirm (Retry all, Import all, the Cancel buttons) asks first, then posts,
+        // with its checkbox's answer added as a hidden field
+        document.addEventListener('submit', function (event) {
+            var form = event.target;
+            if (!form.matches || !form.matches('form[data-confirm]')) {
+                return;
+            }
+            event.preventDefault();
+            var options;
+            try {
+                options = JSON.parse(form.getAttribute('data-confirm'));
+            } catch (e) {
+                options = {};
+            }
+            ask(options).then(function (answer) {
+                if (!answer.confirmed) {
+                    return;
+                }
+                if (options.checkbox && options.checkbox.name) {
+                    var field = form.querySelector('input[type="hidden"][name="' + options.checkbox.name + '"]');
+                    if (!field) {
+                        field = document.createElement('input');
+                        field.type = 'hidden';
+                        field.name = options.checkbox.name;
+                        form.appendChild(field);
+                    }
+                    field.value = answer.checked ? '1' : '';
+                }
+                form.submit();   // not a submit event, so it isn't asked again
+            });
+        });
 
         var dialog = document.getElementById('adif-imp-refresh-dialog');
         var opener = document.getElementById('adif-imp-refresh-open');
