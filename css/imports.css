@@ -4,9 +4,406 @@
     max-width: 1200px;
 }
 
-.adif-imp-filters {
-    align-items: flex-end;
+/* Header: title and status chips on the left; record lookup and the Actions menu on the right */
+.adif-imp-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+    align-items: center;
+    justify-content: space-between;
     margin-bottom: 4px;
+}
+
+.adif-imp-title {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: center;
+}
+
+.adif-imp-title h3 {
+    margin: 0;
+}
+
+.adif-imp-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.adif-imp-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 11px;
+    border-radius: 999px;
+    background: #eef1f3;
+    color: #3d4852;
+    font-size: 0.82em;
+    font-weight: 600;
+    white-space: nowrap;
+    text-decoration: none;
+}
+
+a.adif-imp-chip:hover,
+a.adif-imp-chip:focus {
+    filter: brightness(0.96);
+    text-decoration: underline;
+}
+
+.adif-imp-chip.is-alert {
+    background: #fde8e7;
+    color: #a12f2b;
+}
+
+.adif-imp-chip.is-ok {
+    background: #e3f5e8;
+    color: #1e6b34;
+}
+
+.adif-imp-chip.is-busy {
+    background: #fff3d6;
+    color: #7a5200;
+}
+
+.adif-imp-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+}
+
+.adif-imp-lookup {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin: 0;
+}
+
+.adif-imp-lookup label {
+    margin: 0;
+    font-size: 0.88em;
+    font-weight: normal;
+    color: #445;
+}
+
+.adif-imp-lookup input[type="text"] {
+    width: 120px;
+    padding: 4px 8px;
+    border: 1px solid #cfd6dc;
+    border-radius: 4px;
+}
+
+/* The Actions menu: a button and a panel of actions, each with a one-line explanation */
+.adif-imp-actions {
+    position: relative;
+}
+
+.adif-imp-actions-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.adif-imp-actions-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 20;
+    width: 360px;
+    max-width: 90vw;
+    padding: 6px;
+    border: 1px solid #d5dce2;
+    border-radius: 8px;
+    background: #fff;
+    box-shadow: 0 12px 32px rgba(20, 30, 40, 0.16);
+}
+
+.adif-imp-actions-menu form {
+    margin: 0;
+}
+
+.adif-imp-actions-menu .adif-imp-bypass {
+    display: block;
+    padding: 6px 10px 8px;
+    border-bottom: 1px solid #eef1f3;
+    margin-bottom: 4px;
+}
+
+.adif-imp-menu-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+}
+
+.adif-imp-menu-item:hover:not([disabled]),
+.adif-imp-menu-item:focus-visible {
+    background: #f1f5f8;
+    outline: none;
+}
+
+.adif-imp-menu-item[disabled] {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.adif-imp-menu-title {
+    font-weight: 600;
+    color: #1f2933;
+}
+
+.adif-imp-menu-hint {
+    font-size: 0.85em;
+    color: #5b6670;
+}
+
+.adif-imp-menu-divider {
+    height: 1px;
+    margin: 4px 8px;
+    background: #eef1f3;
+}
+
+/* One line under the header, with the long explanation folded away */
+.adif-imp-lede {
+    margin: 0 0 10px;
+    color: #5b6670;
+}
+
+.adif-imp-lede p {
+    margin: 0;
+}
+
+.adif-imp-about summary {
+    display: inline-block;
+    margin-top: 2px;
+    color: #2f6f9f;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+.adif-imp-about p {
+    max-width: 860px;
+    margin: 6px 0 0;
+    color: #445;
+}
+
+/* The activity strip: one row per background job that's running or finished in the last day */
+.adif-imp-activity {
+    margin: 10px 0 14px;
+    border: 1px solid #dde2e6;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.adif-imp-job {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+    padding: 9px 14px;
+    font-size: 0.9em;
+}
+
+.adif-imp-job + .adif-imp-job {
+    border-top: 1px solid #eef1f3;
+}
+
+.adif-imp-job-name {
+    min-width: 170px;
+}
+
+.adif-imp-job-bar {
+    flex: 0 1 180px;
+    height: 6px;
+    border-radius: 999px;
+    background: #e6eaee;
+    overflow: hidden;
+}
+
+.adif-imp-job-bar > span {
+    display: block;
+    height: 100%;
+    background: #3c7fb5;
+}
+
+.adif-imp-job-detail {
+    flex: 1 1 320px;
+    color: #556;
+}
+
+.adif-imp-job-alert {
+    color: #a12f2b;
+}
+
+.adif-imp-job-cancel {
+    margin: 0;
+}
+
+.adif-imp-job-cancel .btn {
+    padding: 0 4px;
+}
+
+.adif-imp-job-note {
+    margin: 0;
+    padding: 6px 14px 8px;
+    border-top: 1px solid #eef1f3;
+    font-size: 0.82em;
+    color: #667;
+}
+
+/* Never imported and Queued imports, below the run table: collapsed until opened */
+.adif-imp-panel {
+    margin: 16px 0 0;
+    border: 1px solid #dde2e6;
+    border-radius: 6px;
+    background: #fff;
+}
+
+.adif-imp-panel > summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+    padding: 10px 14px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.adif-imp-panel > summary::-webkit-details-marker {
+    display: none;
+}
+
+.adif-imp-panel > summary::before {
+    content: '\25B8';
+    color: #778;
+    transition: transform 0.15s ease;
+}
+
+.adif-imp-panel[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.adif-imp-panel[open] > summary {
+    border-bottom: 1px solid #eef1f3;
+}
+
+.adif-imp-panel-title {
+    font-weight: 600;
+}
+
+.adif-imp-panel-hint {
+    color: #5b6670;
+    font-size: 0.9em;
+}
+
+.adif-imp-panel > .adif-imp-explain,
+.adif-imp-panel > .adif-imp-note {
+    margin: 10px 14px;
+}
+
+/* The Refresh all records confirmation */
+.adif-imp-dialog {
+    width: min(560px, 92vw);
+    padding: 22px 24px;
+    border: 0;
+    border-radius: 10px;
+    box-shadow: 0 20px 48px rgba(20, 30, 40, 0.28);
+    color: #1f2933;
+}
+
+.adif-imp-dialog::backdrop {
+    background: rgba(31, 41, 51, 0.45);
+}
+
+.adif-imp-dialog form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 0;
+}
+
+.adif-imp-dialog p {
+    margin: 0;
+    line-height: 1.5;
+}
+
+.adif-imp-dialog-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.adif-imp-dialog-head h4 {
+    margin: 0;
+}
+
+.adif-imp-dialog-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 6px;
+    background: #f1f4f6;
+    color: #4a5560;
+}
+
+.adif-imp-dialog-facts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #f5f7f9;
+}
+
+.adif-imp-dialog-facts dt {
+    font-size: 0.82em;
+    font-weight: normal;
+    color: #5b6670;
+}
+
+.adif-imp-dialog-facts dd {
+    margin: 0;
+    font-weight: 600;
+}
+
+.adif-imp-dialog-check {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 0;
+    font-weight: normal;
+}
+
+.adif-imp-dialog-check input {
+    margin-top: 3px;
+}
+
+.adif-imp-dialog-check small {
+    display: block;
+    color: #5b6670;
+}
+
+.adif-imp-dialog-note {
+    font-size: 0.88em;
+    color: #5b6670;
+}
+
+.adif-imp-dialog-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
 }
 
 /* The "From stored data" outcome: a warning rather than an error or an all-clear */
@@ -80,85 +477,255 @@
     color: #1e5b2e;
 }
 
-/* One run in the list: an accordion whose summary line reads like a table row */
-.adif-imp-run {
+/* The run table: filter tabs by outcome, one row per run (a <tbody> holding its summary row and its
+   hidden details row), and the pager under it */
+.adif-imp-runs {
+    margin-top: 18px;
+}
+
+.adif-imp-runs-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.adif-imp-runs-head h4 {
+    margin: 0;
+}
+
+.adif-imp-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.adif-imp-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid #dde2e6;
+    border-radius: 999px;
+    background: #fff;
+    color: #334;
+    font-size: 0.85em;
+    text-decoration: none;
+}
+
+.adif-imp-tab:hover,
+.adif-imp-tab:focus {
+    background: #f1f4f6;
+    color: #223;
+    text-decoration: none;
+}
+
+.adif-imp-tab-count {
+    min-width: 1.6em;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: #eef1f3;
+    color: #556;
+    font-size: 0.9em;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.adif-imp-tab.is-alert .adif-imp-tab-count {
+    background: #f9dcda;
+    color: #a12f2b;
+}
+
+.adif-imp-tab.is-active {
+    border-color: #3c7fb5;
+    background: #3c7fb5;
+    color: #fff;
+}
+
+.adif-imp-tab.is-active .adif-imp-tab-count {
+    background: rgba(255, 255, 255, 0.25);
+    color: #fff;
+}
+
+.adif-imp-table-wrap {
+    overflow-x: auto;
     border: 1px solid #dde2e6;
     border-radius: 4px;
-    margin: 6px 0;
     background: #fff;
 }
 
-.adif-imp-run.is-attention {
-    border-color: #f5c2c0;
-}
-
-.adif-imp-run.is-stale {
-    border-color: #ffe082;
-}
-
-.adif-imp-run summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px 14px;
-    align-items: center;
-    padding: 8px 12px;
-    cursor: pointer;
-    list-style: none;
+.adif-imp-runs-table {
+    width: 100%;
+    border-collapse: collapse;
     font-size: 0.9em;
 }
 
-.adif-imp-run summary::-webkit-details-marker {
-    display: none;
+.adif-imp-runs-table > thead th {
+    position: sticky;
+    top: 0;
+    padding: 7px 10px;
+    border-bottom: 1px solid #dde2e6;
+    background: #f8fafb;
+    color: #445;
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
 }
 
-.adif-imp-run summary::before {
-    content: '\25B8';
-    color: #889;
-    margin-right: 2px;
+.adif-imp-run-summary > td {
+    padding: 6px 10px;
+    border-top: 1px solid #eef0f2;
+    vertical-align: middle;
+    cursor: pointer;
 }
 
-.adif-imp-run[open] summary::before {
-    content: '\25BE';
+.adif-imp-run-summary:hover > td {
+    background: #f6f9fb;
 }
 
-.adif-imp-run[open] summary {
-    border-bottom: 1px solid #eef0f2;
+/* The outcome as a coloured edge on the row, beside its pill */
+.adif-imp-run.is-attention .adif-imp-run-summary > td:first-child {
+    box-shadow: inset 3px 0 0 #d9534f;
 }
 
-.adif-imp-run.is-attention summary {
-    background: #fdf6f5;
+.adif-imp-run.is-stale .adif-imp-run-summary > td:first-child {
+    box-shadow: inset 3px 0 0 #f0ad4e;
 }
 
-.adif-imp-run.is-stale summary {
-    background: #fffdf5;
+.adif-imp-run.is-dismissed .adif-imp-run-summary > td:first-child {
+    box-shadow: inset 3px 0 0 #b6bcc2;
+}
+
+.adif-imp-run.is-attention .adif-imp-run-summary > td {
+    background: #fdf8f7;
+}
+
+.adif-imp-run.is-open .adif-imp-run-summary > td {
+    background: #f1f5f8;
+}
+
+.adif-imp-col-toggle {
+    width: 32px;
+    padding-right: 0 !important;
+}
+
+.adif-imp-col-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.adif-imp-toggle {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: #778;
+    line-height: 1;
+    transition: transform 0.15s ease;
+}
+
+.adif-imp-toggle:hover,
+.adif-imp-toggle:focus-visible {
+    background: #e4e9ed;
+    color: #334;
+}
+
+.adif-imp-toggle[aria-expanded="true"] {
+    transform: rotate(90deg);
 }
 
 .adif-imp-when {
     color: #667;
+    white-space: nowrap;
     font-variant-numeric: tabular-nums;
 }
 
 .adif-imp-user {
-    min-width: 90px;
     color: #445;
 }
 
 .adif-imp-rec {
-    min-width: 60px;
     font-weight: 600;
 }
 
-.adif-imp-event,
-.adif-imp-inst {
-    color: #445;
+.adif-imp-run-detail > td {
+    padding: 4px 0 6px;
+    border-top: 1px solid #eef0f2;
+    background: #fbfcfd;
+    cursor: default;
 }
 
-.adif-imp-reqs {
-    color: #667;
+.adif-imp-run-detail .adif-alert {
+    margin: 8px 12px;
 }
 
-.adif-imp-run summary .adif-status-pill {
-    margin-left: auto;
+.adif-imp-pager {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 10px 2px 4px;
+    font-size: 0.88em;
+    color: #556;
+}
+
+.adif-imp-pages {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    align-items: center;
+}
+
+.adif-imp-pages a,
+.adif-imp-pages span {
+    min-width: 30px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    text-align: center;
+    text-decoration: none;
+}
+
+.adif-imp-pages a:hover,
+.adif-imp-pages a:focus {
+    background: #eef1f3;
+    text-decoration: none;
+}
+
+.adif-imp-pages .is-current {
+    background: #3c7fb5;
+    color: #fff;
+    font-weight: 600;
+}
+
+.adif-imp-pages .is-disabled {
+    color: #aab;
+}
+
+.adif-imp-pages-gap {
+    color: #889;
+}
+
+.adif-imp-per-page a,
+.adif-imp-per-page strong {
+    margin-left: 6px;
+}
+
+/* Text for screen readers only */
+.adif-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
 }
 
 .adif-imp-desc {
@@ -209,15 +776,6 @@
     margin: 4px 12px 10px;
     font-size: 0.85em;
     color: #445;
-}
-
-/* A run whose "Needs attention" was dismissed by hand: muted, neither an error nor an all-clear */
-.adif-imp-run.is-dismissed {
-    border-color: #d5d9dd;
-}
-
-.adif-imp-run.is-dismissed summary {
-    background: #f6f7f8;
 }
 
 /* The dismiss control beside the retry button: an optional reason, then the button */
@@ -290,32 +848,4 @@
 /* The background import queue: the card reuses the Never imported card's look */
 .adif-imp-queue-idle {
     margin: 10px 0 0;
-}
-
-/* The Refresh all records card (see classes/ImportRefresh.php): status line and progress bar */
-.adif-imp-refresh-status {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px 14px;
-    align-items: center;
-    font-size: 0.92em;
-}
-
-.adif-imp-refresh-attention {
-    color: #a94442;
-    font-weight: bold;
-}
-
-.adif-imp-refresh-bar {
-    height: 8px;
-    margin: 8px 0 4px;
-    border-radius: 4px;
-    background: #e4e8eb;
-    overflow: hidden;
-}
-
-.adif-imp-refresh-bar span {
-    display: block;
-    height: 100%;
-    background: #3c7fb5;
 }

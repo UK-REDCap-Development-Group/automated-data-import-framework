@@ -5,15 +5,43 @@ module log and a short line to the project's Logging page, and nothing else happ
 know to go looking. The Imports page (`pages/Imports.php`) reads those same log entries back and
 answers the two questions that matter:
 
-1. **Which imports left mapped fields empty?** The runs list shows every run, newest first, with an
-   outcome pill and the per-endpoint detail behind it.
+1. **Which imports left mapped fields empty?** The run table lists the runs, newest first, one row
+   each with an outcome pill; opening a row shows its per-endpoint detail (see "The run table").
 2. **Does this record's import need running again?** The record lookup shows the latest run per
    event for one record, with a verdict.
 3. **Can it be fixed from here?** Yes: any run flagged *Needs attention* has a retry button (see
    "Re-running an import" below).
-4. **Which records have never been imported at all?** The *Never imported* card lists records that
+4. **Which records have never been imported at all?** The *Never imported* panel lists records that
    have data but whose mapped fields are empty and that no import has ever tried - typically records
    entered before the module was enabled - and runs their first import (see "Records never imported").
+
+## Page layout
+
+Top to bottom, so the run table stays in view and the bulk actions stay out of the way until needed:
+
+- **Header:** the title with status chips beside it - how many runs need attention (links to that
+  tab), how many places were never imported (opens that panel), and the queue (idle with when the
+  cron last ran, or how many are queued, red when overdue; opens the queue panel). On the right, the
+  record lookup and an **Actions** menu.
+- **Actions menu** (users who can retry, or refresh): Retry all failed, Import never-imported
+  records, Run queued imports now and, for Design users, Refresh all records. Each item says in one
+  line what it does, or why it's unavailable (already running, nothing to do). The "Retries skip stored
+  data" checkbox at its top applies to Retry all and to the per-run Retry buttons. **Refresh all
+  records** opens a confirmation dialog with the off-peak hours, the server's limit and the stored-data
+  choice; the long explanation lives there instead of on the page. Read Only users get no menu.
+- **One line of description**, with "How outcomes are decided" folded away beneath it.
+- **Notices** from the last start or cancel (`?refresh=`, `?retryall=`, `?importall=`), then the
+  **activity strip** (`#adif-imp-activity`, where those redirects land): one row per background job
+  that's running or finished in the last day - the survey queue when imports are waiting, Refresh all
+  records, Retry all failed, Import never-imported - each with a status pill, a progress bar, its
+  counts, who started it, and **Cancel** while it runs. With nothing running, the strip isn't drawn.
+- The record lookup's verdict, when a record is looked up, then **the run table** (see below).
+- Below the table, collapsed: **Never imported** (`#adif-imp-never`) and **Queued imports**
+  (`#adif-imp-queue`). A link to either id - the header chips, the strip's "Show the queue" - opens it.
+
+The menu, dialog and panels are plain DOM in a script on the page, so they work for every user;
+`js/imports.js` (users who can retry) still handles the per-run buttons, the per-place Import buttons
+and Run queued imports now, whose progress shows in the queue's activity-strip row.
 
 ## How runs are reconstructed
 
@@ -24,14 +52,35 @@ entry, all sharing a `run_id` and logged with an explicit `project_id` (see
 `queryLogs()` pseudo-query dialect proved unreliable on 16.1.7):
 
 1. `importRecentRunIds()` picks the newest *runs* - grouped by `run_id`, filtered by record in SQL
-   when one is given - so "Runs shown" is a number of runs, and a record's runs are found however
-   far back they are.
+   when one is given - so the table's 500-run cap is a number of runs, and a record's runs are found
+   however far back they are.
 2. `importRunEntries()` then reads every entry of those runs, so no run is cut in half by a row cap.
 
 `importRunById()` uses step 2 alone; the retry action looks its run up this way.
 
 Only metadata is involved - the entries were written scrubbed (no URLs, no values), so the page can
 show them as-is.
+
+## The run table
+
+The page reads the latest 500 runs (the filtered record's, when the record lookup is used) and shows
+them as a table, newest first, a page at a time:
+
+- **One row per run:** when, who requested it, record, event, instrument (with its repeat instance),
+  how many endpoint requests it made, and its outcome pill, with a coloured edge for *Needs
+  attention*, *From stored data* and *Dismissed*. Clicking a row (or its arrow) opens a details row
+  under it: the description, run_id and timing, why it needs attention or was dismissed, the Retry
+  and Dismiss controls, the per-request table, and what was skipped. Each run is its own `<tbody
+  class="adif-imp-run" data-run-id>` holding both rows, which is what `js/imports.js` updates after a
+  retry or dismissal. The opening and closing is a small script on the page itself, so it works for
+  Read Only users, who don't get `js/imports.js`.
+- **Filter tabs by outcome:** All, Needs attention, Dismissed, From stored data and OK, each with its
+  count among the runs read (`?status=`). The "left mapped fields empty" alert above links to the
+  *Needs attention* tab.
+- **Pages:** 25, 50 or 100 rows a page (`?per_page=`, default 25; the old `?limit=` still works) and
+  a page bar (`?p=`, since the framework's own `page` parameter names the module page). Tabs, pages
+  and the record lookup keep each other's settings, and land back on the table (`#adif-imp-runs`).
+  The page is worked out on the server, so only one page of runs is drawn.
 
 ## What counts as needing attention
 
@@ -62,7 +111,7 @@ nobody needs any more. A run flagged *Needs attention* can be **dismissed** inst
 button beside **Retry this import**, with an optional reason), so it stops being flagged forever.
 
 - **What changes:** the run's outcome reads **Dismissed** (grey). It no longer counts in the
-  "left mapped fields empty" alert, in the record lookup's verdict, or for **Retry all failed**, and
+  "need attention" chip, in the record lookup's verdict, or for **Retry all failed**, and
   the **Needs attention** filter leaves it out (the **Dismissed** filter lists them). Nothing about
   the run's entries or the record's data changes: the fields are still empty.
 - **Undo:** a dismissed run has an **Undo dismiss** button, which flags it again (and brings its
@@ -79,7 +128,7 @@ button beside **Retry this import**, with an optional reason), so it stops being
 
 ## Re-running an import
 
-The **Retry this import** button on a flagged run (and **Retry all failed** in the toolbar) re-runs
+The **Retry this import** button on a flagged run (and **Retry all failed** in the Actions menu) re-runs
 the import for the same record, event, instrument and repeat instance through
 `ImportStatus::retryImportRun()`, which calls the existing `Import::importMappedData()`. Nothing
 about the import engine is special-cased for retries.
@@ -115,16 +164,16 @@ exactly what failed - including for repeating instruments, whose instance number
 
 ## Retry all failed
 
-**Retry all failed (N)** re-runs every *import* whose latest run needs attention, not every flagged
+**Retry all failed (N)**, in the Actions menu, re-runs every *import* whose latest run needs attention, not every flagged
 run. An import is a record's event, plus the repeat instance when the event or instrument repeats,
 plus the instrument when it repeats (`ImportStatus::importRunUnitKey()`). A failed run stays flagged
 in the list after a later run - a retry, a new survey submission - has imported the same data again,
 since a run's own entries never change; Retry all leaves those alone, and dismissed runs too
 (`ImportStatus::importRetryTargets()`).
 
-It covers the most recent 500 runs, not only those shown in the list (the button's tooltip says how
-many aren't shown), or just the filtered record's when the record filter is set. The button only
-appears when there is something to retry.
+It covers the most recent 500 runs, not only those on the current page (its confirmation says how
+many aren't), or just the filtered record's when the record filter is set. The menu item is greyed
+out, with the reason, when there is nothing to retry or a retry all is already running.
 
 **It runs in the background, not in the browser** (`classes/ImportRetryAll.php`). The button posts
 to the page, which saves a job listing the runs to retry (the project setting `import-retry-all-job`)
@@ -139,7 +188,7 @@ cron `adif_retry_all` (every minute) works through the jobs:
   retried by hand at that moment (the per-run lock) or whose fields are no longer mapped is skipped too.
 - Each retry goes through `retryImportRun()`, like the per-run button, and is logged as "API import:
   retry all failed, requested by <user>". The **Skip stored data** choice made when queueing applies.
-- The toolbar shows the job's progress while it runs (reload the page to update it), with a Cancel
+- The activity strip shows the job's progress while it runs (reload the page to update it), with a Cancel
   button, and a summary of the last job for a day afterwards: how many are now fine, still need
   attention, were skipped, or couldn't be retried. Progress is saved after each retry, re-reading the
   job first so a cancel wins. One job per project at a time.
@@ -177,8 +226,8 @@ Each place is also checked for the values its `[placeholders]` need, using the i
 | **Waiting on data** | No request can look its values up yet (no address entered, say). Not offered for import. |
 
 **Import** (per row) sends `import-unattempted`, which calls `ImportStatus::runFirstImport()`, while
-the page waits. **Import all (N)** queues the same imports for a cron instead (see "Import all"
-below). Either way, each import goes through `runFirstImport()`:
+the page waits. **Import never-imported records (N)**, in the Actions menu, queues the same imports
+for a cron instead (see "Import all" below). Either way, each import goes through `runFirstImport()`:
 
 - **Re-check first:** the place is looked up again for that one record. If it has been imported since
   the page loaded (another tab, Import all, a survey), or its fields have values now, nothing runs
@@ -197,9 +246,10 @@ below). Either way, each import goes through `runFirstImport()`:
 
 ### Import all
 
-**Import all (N)** works the same way as Retry all failed (`classes/ImportAll.php`):
+**Import never-imported records (N)** (Actions menu; "Import all" in the code) works the same way as
+Retry all failed (`classes/ImportAll.php`):
 
-- **Queued, not run in the page:** the button saves a job, the project setting `import-all-job`, listing
+- **Queued, not run in the page:** the menu item saves a job, the project setting `import-all-job`, listing
   every importable place at that moment. It's limited to the user's data access group, or to the
   filtered record when the record filter is set. The cron `adif_import_all` (every minute, up to 50
   seconds a run) works through it in the background, so the page can be left. It isn't held to the
@@ -210,8 +260,8 @@ below). Either way, each import goes through `runFirstImport()`:
 - **Re-checked:** each place goes through `runFirstImport()` at its turn. Places imported since the job
   was queued (a survey, the row's own button), whose fields have values now, or whose lookup values are
   still missing are counted as skipped, not imported.
-- **Progress and cancelling:** the Never imported card shows the job's progress (imported, needing
-  attention, skipped, failed) and a **Cancel** button. It shows the last job's summary for a day after.
+- **Progress and cancelling:** the activity strip shows the job's progress (imported, needing
+  attention, skipped, failed) and a **Cancel** button, and the last job's summary for a day after.
   One job runs per project at a time. Starting, cancelling and finishing are written to the module log
   (`ADIF import all requested / cancelled / done`).
 - **Who:** the same users who can retry (Edit or above).

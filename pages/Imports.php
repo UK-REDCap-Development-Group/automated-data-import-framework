@@ -29,7 +29,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_refresh_action']
     }
     if (!headers_sent()) {
         header('Location: ' . $module->getUrl('pages/Imports.php') . '&refresh=' . rawurlencode($refreshOutcome)
-            . '#adif-imp-refresh', true, 303);
+            . '#adif-imp-activity', true, 303);
         exit;
     }
     $_GET['refresh'] = $refreshOutcome;
@@ -53,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_retry_action']))
     }
     if (!headers_sent()) {
         header('Location: ' . $module->getUrl('pages/Imports.php') . '&retryall=' . rawurlencode($retryOutcome)
-            . ($retryRecord !== '' ? '&record=' . rawurlencode($retryRecord) : '') . '#adif-imp-retry-all-bar', true, 303);
+            . ($retryRecord !== '' ? '&record=' . rawurlencode($retryRecord) : '') . '#adif-imp-activity', true, 303);
         exit;
     }
     $_GET['retryall'] = $retryOutcome;
@@ -77,7 +77,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['adif_import_all_actio
     }
     if (!headers_sent()) {
         header('Location: ' . $module->getUrl('pages/Imports.php') . '&importall=' . rawurlencode($importAllOutcome)
-            . ($importAllRecord !== '' ? '&record=' . rawurlencode($importAllRecord) : '') . '#adif-imp-never', true, 303);
+            . ($importAllRecord !== '' ? '&record=' . rawurlencode($importAllRecord) : '') . '#adif-imp-activity', true, 303);
         exit;
     }
     $_GET['importall'] = $importAllOutcome;
@@ -89,18 +89,21 @@ $module->requireModuleView($pid);
 
 $recordFilter = trim((string) ($_GET['record'] ?? ''));
 $statusFilter = in_array((string) ($_GET['status'] ?? ''), ['attention', 'dismissed', 'stale', 'ok'], true) ? (string) $_GET['status'] : '';
-// Read once: re-reading $_GET['limit'] after the check would turn a missing parameter (the page as
-// opened from the menu) into 0, which importRuns() clamps to a single run
-$limitParam = (int) ($_GET['limit'] ?? 50);
-$limit = in_array($limitParam, [25, 50, 100, 200], true) ? $limitParam : 50;
+// The run table's paging: rows per page ("limit" is the old name of the setting, from bookmarks made
+// before the table had pages) and the page number, "p" because the framework's own "page" parameter
+// names the module page
+$perPageParam = (int) ($_GET['per_page'] ?? $_GET['limit'] ?? 25);
+$perPage = in_array($perPageParam, [25, 50, 100], true) ? $perPageParam : 25;
+$pageParam = max(1, (int) ($_GET['p'] ?? 1));
 
-// Retry all failed covers every import among the most recent 500 runs, not only the runs listed
-// below; without a record filter, the list is the newest of those same runs. A user in a data access
-// group sees only their group's records, here and in every list below (see classes/Access.php).
-$recentRuns = $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['limit' => 500]));
+// The run table pages through the most recent 500 runs (the filtered record's, when there is one),
+// and Retry all failed covers every import among them, not only the runs on the page. A user in a data
+// access group sees only their group's records, here and in every list below (see classes/Access.php).
+$runListCap = 500;
+$recentRuns = $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['limit' => $runListCap]));
 $allRuns = $recordFilter === ''
-    ? array_slice($recentRuns, 0, $limit)
-    : $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $limit]));
+    ? $recentRuns
+    : $module->onlyVisibleRecords($pid, $module->importRuns($pid, ['record' => $recordFilter, 'limit' => $runListCap]));
 $attentionCount = count(array_filter($allRuns, fn($run) => $run['outcome'] === 'attention'));
 $recordVisible = $recordFilter === '' || $module->canSeeRecord($pid, $recordFilter);
 
@@ -117,8 +120,6 @@ if ($canRetry) {
     $retryTargets = array_values(array_filter($module->importRetryTargets($pid, $recentRuns),
         fn($runId) => $recordFilter === '' || (string) ($recordOfRun[$runId] ?? '') === $recordFilter));
 }
-$listedRunIds = array_flip(array_column($allRuns, 'run_id'));
-$hiddenTargets = count(array_filter($retryTargets, fn($runId) => !isset($listedRunIds[$runId])));
 
 // Imports waiting in the background queue (see ImportQueue), and when the cron last worked through
 // it, so a cron that isn't running shows up here rather than as fields that never fill
@@ -200,17 +201,24 @@ $importAllMessages = [
     'error' => ['error', 'Import all couldn\'t be started or cancelled. The server\'s PHP error log has the details.'],
 ];
 $importAllNotice = $importAllMessages[(string) ($_GET['importall'] ?? '')] ?? null;
-// Whether to show Import all's status even with nothing left to list: while it runs, and for a day after
-$importAllRecent = $importAllActive || $importAllNotice !== null
-    || ($importAllJob !== null && (int) $importAllJob['finished_at'] >= time() - 86400);
 $neverRecordCount = count(array_unique(array_column($neverImported, 'record')));
 // The table lists this many places; Import all still covers every one
 $neverShownCap = 200;
 
+// The table: the runs with the chosen outcome, one page of them at a time. Each outcome's count is
+// shown on its filter tab.
+$outcomeCounts = array_count_values(array_column($allRuns, 'outcome'));
 $runs = $allRuns;
 if ($statusFilter !== '') {
     $runs = array_values(array_filter($runs, fn($run) => $run['outcome'] === $statusFilter));
 }
+$pageCount = max(1, (int) ceil(count($runs) / $perPage));
+$currentPage = min($pageParam, $pageCount);
+$pageRuns = array_slice($runs, ($currentPage - 1) * $perPage, $perPage);
+
+// Retry all failed's tooltip says how many of its imports aren't on this page
+$listedRunIds = array_flip(array_column($pageRuns, 'run_id'));
+$hiddenTargets = count(array_filter($retryTargets, fn($runId) => !isset($listedRunIds[$runId])));
 
 // The record lookup doubles as the table's record filter: entering a record shows both its latest
 // run per event (below) and the filtered runs list
@@ -229,6 +237,40 @@ foreach (['prefix', 'page', 'pid'] as $name) {
     if (isset($_GET[$name])) {
         $hiddenParams[$name] = (string) $_GET[$name];
     }
+}
+// The run table's filters as they stand, for its tab, page and per-page links
+$runFilters = ['record' => $recordFilter, 'status' => $statusFilter, 'per_page' => $perPage, 'p' => $currentPage];
+
+// This page's URL with its filters, and $changes made to them ('p' => 3, 'status' => 'ok', ...). Blank
+// values and the defaults (page 1, 25 per page) are left out, so the links stay short.
+function adif_imp_url($hiddenParams, $filters, $changes = [], $anchor = 'adif-imp-runs')
+{
+    $query = $hiddenParams;
+    foreach (array_merge($filters, $changes) as $name => $value) {
+        if ($value === '' || $value === null || ($name === 'p' && (int) $value <= 1) || ($name === 'per_page' && (int) $value === 25)) {
+            continue;
+        }
+        $query[$name] = (string) $value;
+    }
+    return '?' . http_build_query($query) . ($anchor !== '' ? '#' . $anchor : '');
+}
+
+// The page numbers to link: the first and last, and two either side of the current one, with null
+// where a gap is skipped ("1 ... 6 7 [8] 9 10 ... 20")
+function adif_imp_page_numbers($current, $count)
+{
+    $numbers = [];
+    $previous = 0;
+    for ($page = 1; $page <= $count; $page++) {
+        if ($page === 1 || $page === $count || abs($page - $current) <= 2) {
+            if ($page - $previous > 1) {
+                $numbers[] = null;
+            }
+            $numbers[] = $page;
+            $previous = $page;
+        }
+    }
+    return $numbers;
 }
 
 function adif_imp_h($value)
@@ -324,6 +366,17 @@ function adif_imp_ago($time)
     return date('Y-m-d H:i', (int) $time);
 }
 
+// A background job's Cancel button: a form posting $field=cancel back to this page (see the top of it)
+function adif_imp_cancel_form($module, $field, $record, $confirm)
+{
+    return '<form method="post" class="adif-imp-job-cancel" action="' . adif_imp_h($module->getUrl('pages/Imports.php')) . '"'
+        . ' onsubmit="return confirm(' . adif_imp_h(json_encode($confirm)) . ');">'
+        . '<input type="hidden" name="redcap_csrf_token" value="' . adif_imp_h($module->getCSRFToken()) . '">'
+        . '<input type="hidden" name="' . adif_imp_h($field) . '" value="cancel">'
+        . '<input type="hidden" name="record" value="' . adif_imp_h($record) . '">'
+        . '<button type="submit" class="btn btn-link btn-sm">Cancel</button></form>';
+}
+
 // "22:00" for an off-peak hour
 function adif_imp_hour($hour)
 {
@@ -344,55 +397,276 @@ function adif_imp_instrument($run)
 <link rel="stylesheet" href="<?= adif_imp_h($module->getUrl('css/imports.css')) ?>">
 
 <div class="adif-test-page adif-imp-page">
-    <h3>ADIF Imports</h3>
-    <p>Every import run the module has logged, newest first, with its outcome: which endpoint requests
+    <header class="adif-imp-header">
+        <div class="adif-imp-title">
+            <h3>Import status</h3>
+            <div class="adif-imp-chips">
+                <?php if ($attentionCount > 0): ?>
+                    <a class="adif-imp-chip is-alert" href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['status' => 'attention', 'p' => 1])) ?>"
+                       title="Runs among the latest <?= count($allRuns) ?> that left mapped fields empty"><?= number_format($attentionCount) ?> need<?= $attentionCount === 1 ? 's' : '' ?> attention</a>
+                <?php elseif (!empty($allRuns)): ?>
+                    <span class="adif-imp-chip is-ok">No failed imports</span>
+                <?php endif; ?>
+                <?php if (!empty($neverImported)): ?>
+                    <a class="adif-imp-chip" href="#adif-imp-never"><?= number_format(count($neverImported)) ?> never imported</a>
+                <?php endif; ?>
+                <?php if ($queueError !== null): ?>
+                    <span class="adif-imp-chip is-alert" title="<?= adif_imp_h($queueError) ?>">Queue unreadable</span>
+                <?php elseif (!empty($queuedImports)): ?>
+                    <a class="adif-imp-chip<?= $queueOverdue ? ' is-alert' : ' is-busy' ?>" href="#adif-imp-queue"><?= number_format(count($queuedImports)) ?> queued<?= $queueOverdue ? ' · overdue' : '' ?></a>
+                <?php elseif ($runInBackground): ?>
+                    <span class="adif-imp-chip is-ok">Queue idle · cron <?= $queueLastRun > 0 ? 'ran ' . adif_imp_h(adif_imp_ago($queueLastRun)) : 'never ran' ?></span>
+                <?php else: ?>
+                    <span class="adif-imp-chip" title="&quot;Run each import while the survey respondent waits&quot; is ticked in this project's ADIF settings">Imports run while respondents wait</span>
+                <?php endif; ?>
+            </div>
+        </div>
+
+        <div class="adif-imp-tools">
+            <form method="get" class="adif-imp-lookup" role="search">
+                <?php foreach ($hiddenParams as $name => $value): ?>
+                    <input type="hidden" name="<?= adif_imp_h($name) ?>" value="<?= adif_imp_h($value) ?>">
+                <?php endforeach; ?>
+                <label for="adif-imp-record">Record</label>
+                <input type="text" name="record" id="adif-imp-record" value="<?= adif_imp_h($recordFilter) ?>" placeholder="e.g. 101"
+                       title="A record's exact name: shows its runs, and its latest import per event">
+                <?php if ($statusFilter !== ''): ?>
+                    <input type="hidden" name="status" value="<?= adif_imp_h($statusFilter) ?>">
+                <?php endif; ?>
+                <?php if ($perPage !== 25): ?>
+                    <input type="hidden" name="per_page" value="<?= $perPage ?>">
+                <?php endif; ?>
+                <button type="submit" class="btn btn-defaultrc btn-sm">Look up</button>
+                <?php if ($recordFilter !== ''): ?>
+                    <a class="btn btn-link btn-sm" href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['record' => '', 'p' => 1], '')) ?>">Clear</a>
+                <?php endif; ?>
+            </form>
+
+            <?php if ($canRetry || $canRefresh): ?>
+                <div class="adif-imp-actions">
+                    <button type="button" class="btn btn-primaryrc btn-sm adif-imp-actions-toggle" id="adif-imp-actions-toggle"
+                            aria-haspopup="true" aria-expanded="false" aria-controls="adif-imp-actions-menu">
+                        Actions <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5 6 8l3.5-3.5"></path></svg>
+                    </button>
+                    <div class="adif-imp-actions-menu" id="adif-imp-actions-menu" hidden>
+                        <?php if ($canRetry): ?>
+                            <label class="adif-imp-bypass" for="adif-imp-bypass" title="On (recommended): a retry calls the APIs even for requests the cache could answer, so data stored during an outage isn't reused. Off: stored responses are reused where they exist.">
+                                <input type="checkbox" id="adif-imp-bypass" name="bypass_cache" value="1" form="adif-imp-retry-all-form" checked>
+                                Retries skip stored data and call the APIs
+                            </label>
+
+                            <?php if (!$retryActive && !empty($retryTargets)): ?>
+                                <?php
+                                $retryConfirm = 'Re-run ' . count($retryTargets) . ' failed import' . (count($retryTargets) === 1 ? '' : 's')
+                                    . ($hiddenTargets > 0 ? " ($hiddenTargets not on this page)" : '')
+                                    . '? The fields they map will be overwritten with the APIs\' current values. They run in the background,'
+                                    . ' starting within a minute or so; you can leave this page.';
+                                ?>
+                                <form method="post" id="adif-imp-retry-all-form" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                                      onsubmit="return confirm(<?= adif_imp_h(json_encode($retryConfirm)) ?>);">
+                                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                                    <input type="hidden" name="adif_retry_action" value="start">
+                                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                                    <button type="submit" class="adif-imp-menu-item">
+                                        <span class="adif-imp-menu-title">Retry all failed (<?= count($retryTargets) ?>)</span>
+                                        <span class="adif-imp-menu-hint">Every import whose latest run needs attention<?= $recordFilter !== '' ? ', for this record' : '' ?>. Runs in the background within a minute.</span>
+                                    </button>
+                                </form>
+                            <?php else: ?>
+                                <button type="button" class="adif-imp-menu-item" disabled>
+                                    <span class="adif-imp-menu-title">Retry all failed</span>
+                                    <span class="adif-imp-menu-hint"><?= $retryActive ? 'Already running; see its progress above the table.' : 'Nothing needs retrying.' ?></span>
+                                </button>
+                            <?php endif; ?>
+
+                            <?php if (!$importAllActive && !empty($neverImportable)): ?>
+                                <?php
+                                $importAllConfirm = 'Run the first import for ' . count($neverImportable) . ' place'
+                                    . (count($neverImportable) === 1 ? '' : 's') . '? Each one calls the APIs its mappings use and fills the'
+                                    . ' empty fields. They run in the background, starting within a minute or so; you can leave this page.';
+                                ?>
+                                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
+                                      onsubmit="return confirm(<?= adif_imp_h(json_encode($importAllConfirm)) ?>);">
+                                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                                    <input type="hidden" name="adif_import_all_action" value="start">
+                                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
+                                    <button type="submit" class="adif-imp-menu-item">
+                                        <span class="adif-imp-menu-title">Import never-imported records (<?= count($neverImportable) ?>)</span>
+                                        <span class="adif-imp-menu-hint">First imports for <?= $neverRecordCount ?> record<?= $neverRecordCount === 1 ? '' : 's' ?> with data but no import yet, in the background.</span>
+                                    </button>
+                                </form>
+                            <?php else: ?>
+                                <button type="button" class="adif-imp-menu-item" disabled>
+                                    <span class="adif-imp-menu-title">Import never-imported records</span>
+                                    <span class="adif-imp-menu-hint"><?= $importAllActive ? 'Already running; see its progress above the table.'
+                                        : (!empty($neverImported) ? 'None of them has the values its lookups need yet.' : 'Every record with data has been imported.') ?></span>
+                                </button>
+                            <?php endif; ?>
+
+                            <button type="button" class="adif-imp-menu-item" id="adif-imp-run-queue"<?= empty($queuedImports) ? ' disabled' : '' ?>>
+                                <span class="adif-imp-menu-title">Run queued imports now</span>
+                                <span class="adif-imp-menu-hint"><?= empty($queuedImports) ? 'Nothing is waiting.'
+                                    : number_format(count($queuedImports)) . ' waiting. Runs them from this page instead of waiting for the cron; keep the page open.' ?></span>
+                            </button>
+                        <?php endif; ?>
+
+                        <?php if ($canRefresh): ?>
+                            <div class="adif-imp-menu-divider" role="separator"></div>
+                            <button type="button" class="adif-imp-menu-item" id="adif-imp-refresh-open"<?= $refreshActive ? ' disabled' : '' ?>>
+                                <span class="adif-imp-menu-title">Refresh all records&hellip;</span>
+                                <span class="adif-imp-menu-hint"><?= $refreshActive ? 'Already running; see its progress above the table.'
+                                    : 'Re-imports every record during off-peak hours (' . adif_imp_h(adif_imp_hour($refreshWindow['start'])) . '&ndash;'
+                                        . adif_imp_h(adif_imp_hour($refreshWindow['end'])) . ').' ?></span>
+                            </button>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </div>
+    </header>
+
+    <div class="adif-imp-lede">
+        <p>Every import ADIF has run in this project, newest first.<?= !$canRetry
+            ? ' You can view this page; retrying, dismissing or running imports needs View &amp; Edit rights on every instrument with ADIF mappings, or Project Design rights.' : '' ?></p>
+        <details class="adif-imp-about">
+            <summary>How outcomes are decided</summary>
+            <p>Every import run the module has logged, newest first, with its outcome: which endpoint requests
         failed and which mapped fields were therefore left empty. A run <strong>needs attention</strong> when a
         request failed with nothing saved from it, so its fields are still waiting on the data; runs answered
         from <strong>stored data</strong> during an API outage are noted but not flagged, since their fields were
         filled as intended. Runs that need attention can be re-run from here for the same record, event,
         instrument and instance &mdash; the retry is logged like any other run.</p>
-    <?php if (!$canRetry): ?>
-        <div class="adif-alert adif-alert-empty">You can view this page. Retrying, dismissing or running imports needs
-            View &amp; Edit rights on every instrument with ADIF mappings, or Project Design rights.</div>
-    <?php endif; ?>
+        </details>
+    </div>
 
-    <?php if ($attentionCount > 0 && $statusFilter !== 'attention'): ?>
-        <div class="adif-alert adif-alert-error" role="alert">
-            <strong><?= $attentionCount ?></strong> of the last <?= count($allRuns) ?> import run<?= count($allRuns) === 1 ? '' : 's' ?>
-            <?= $attentionCount === 1 ? 'has' : 'have' ?> left mapped fields empty<?= !empty($retryTargets)
-                ? ' - filter by <strong>Needs attention</strong> below to see just those, or use Retry all failed.'
-                : '. Filter by <strong>Needs attention</strong> below to see just those.' ?>
-        </div>
-    <?php endif; ?>
+    <?php foreach ([$refreshNotice, $retryNotice, $importAllNotice] as $notice): ?>
+        <?php if ($notice !== null): ?>
+            <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$notice[0]] ?>"
+                 role="status"><?= adif_imp_h($notice[1]) ?></div>
+        <?php endif; ?>
+    <?php endforeach; ?>
 
-    <form method="get" class="adif-form-row adif-imp-filters">
-        <?php foreach ($hiddenParams as $name => $value): ?>
-            <input type="hidden" name="<?= adif_imp_h($name) ?>" value="<?= adif_imp_h($value) ?>">
-        <?php endforeach; ?>
-        <div class="adif-form-field">
-            <label for="adif-imp-record">Record (exact name) &mdash; also runs the lookup below</label>
-            <input type="text" name="record" id="adif-imp-record" value="<?= adif_imp_h($recordFilter) ?>" placeholder="e.g. 101">
-        </div>
-        <div class="adif-form-field">
-            <label for="adif-imp-status">Outcome</label>
-            <select name="status" id="adif-imp-status">
-                <option value="">All runs</option>
-                <option value="attention" <?= $statusFilter === 'attention' ? 'selected' : '' ?>>Needs attention</option>
-                <option value="dismissed" <?= $statusFilter === 'dismissed' ? 'selected' : '' ?>>Dismissed</option>
-                <option value="stale" <?= $statusFilter === 'stale' ? 'selected' : '' ?>>From stored data</option>
-                <option value="ok" <?= $statusFilter === 'ok' ? 'selected' : '' ?>>OK</option>
-            </select>
-        </div>
-        <div class="adif-form-field">
-            <label for="adif-imp-limit">Runs shown</label>
-            <select name="limit" id="adif-imp-limit">
-                <?php foreach ([25, 50, 100, 200] as $option): ?>
-                    <option value="<?= $option ?>" <?= $limit === $option ? 'selected' : '' ?>><?= $option ?></option>
-                <?php endforeach; ?>
-            </select>
-        </div>
-        <button type="submit" class="btn btn-defaultrc btn-sm">Apply</button>
-    </form>
+    <?php
+    // The activity strip: each background job that's running, or finished in the last day, as one row.
+    // 'detail' is HTML, built here from escaped values.
+    $jobRows = [];
+    $recentlyOver = fn($job) => $job !== null && (int) ($job['finished_at'] ?? 0) >= time() - 86400;
+
+    if ($queueError === null && !empty($queuedImports)) {
+        $jobRows[] = [
+            'name' => 'Survey import queue',
+            'pill' => $queueOverdue ? ['adif-status-error', 'Overdue'] : ['adif-status-stale', 'Waiting'],
+            'percent' => null,
+            'detail' => number_format(count($queuedImports)) . ' waiting, the oldest since ' . adif_imp_h(adif_imp_ago($queueOldest))
+                . ' · cron ' . ($queueLastRun > 0 ? 'last ran ' . adif_imp_h(adif_imp_ago($queueLastRun)) : 'has never run')
+                . ($queueOverdue ? '. REDCap\'s cron may not be running ADIF\'s job (<code>adif_import_queue</code>): ask your REDCap administrator.' : '')
+                . ' · <a href="#adif-imp-queue">Show the queue</a>'
+                . ' <span id="adif-imp-queue-progress" class="adif-imp-progress" aria-live="polite"></span>',
+            'cancel' => '',
+        ];
+    }
+
+    if ($refreshActive || $recentlyOver($refreshJob)) {
+        $total = max(1, (int) $refreshJob['record_count']);
+        $done = min($total, (int) $refreshJob['next']);
+        $minutesLeft = $refreshActive && $done > 0
+            ? (int) ceil(($refreshJob['imports'] / $done) * ($total - $done) / $refreshWindow['per_minute']) : null;
+        $jobRows[] = [
+            'name' => 'Refresh all records',
+            'pill' => match ($refreshJob['status']) {
+                'waiting' => ['adif-status-stale', $refreshWindow['open'] ? 'Starting' : 'Starts at ' . adif_imp_hour($refreshWindow['start'])],
+                'running' => ['adif-status-stale', $refreshWindow['open'] ? 'Running' : 'Paused until ' . adif_imp_hour($refreshWindow['start'])],
+                'done' => ['adif-status-ok', 'Finished'],
+                'cancelled' => ['adif-status-none', 'Cancelled'],
+                default => ['adif-status-error', 'Stopped'],
+            },
+            'percent' => $done / $total * 100,
+            'detail' => number_format($done) . ' of ' . number_format($total) . ' records · '
+                . number_format((int) $refreshJob['imports']) . ' imports'
+                . ((int) $refreshJob['attention'] > 0 ? ', <strong class="adif-imp-job-alert">' . number_format((int) $refreshJob['attention']) . ' need attention</strong>' : '')
+                . ((int) $refreshJob['skipped'] > 0 ? ', ' . number_format((int) $refreshJob['skipped']) . ' skipped (lookup values missing)' : '')
+                . ' · requested by ' . adif_imp_h($refreshJob['requested_by']) . ' ' . adif_imp_h(adif_imp_ago($refreshJob['requested_at']))
+                . ($minutesLeft !== null ? ' · roughly ' . ($minutesLeft < 90 ? $minutesLeft . ' min' : round($minutesLeft / 60, 1) . ' h') . ' of off-peak time to go' : '')
+                . ($refreshJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($refreshJob['cancelled_by'] ?? '?') : '')
+                . ($refreshJob['status'] === 'failed' ? ' · ' . adif_imp_h($refreshJob['message'] ?? '') : ''),
+            'cancel' => $refreshActive && $canRefresh ? adif_imp_cancel_form($module, 'adif_refresh_action', '',
+                'Cancel the refresh? Imports it has already run stay; the rest of the records are left as they are.') : '',
+        ];
+    }
+
+    if ($canRetry && ($retryActive || $recentlyOver($retryJob))) {
+        $retryTotal = max(1, count($retryJob['run_ids']));
+        $retryDone = min($retryTotal, (int) $retryJob['next']);
+        $jobRows[] = [
+            'name' => 'Retry all failed',
+            'pill' => match ($retryJob['status']) {
+                'waiting' => ['adif-status-stale', 'Queued'],
+                'running' => ['adif-status-stale', 'Running'],
+                'done' => ['adif-status-ok', 'Finished'],
+                'cancelled' => ['adif-status-none', 'Cancelled'],
+                default => ['adif-status-error', 'Stopped'],
+            },
+            'percent' => $retryDone / $retryTotal * 100,
+            'detail' => number_format($retryDone) . ' of ' . number_format($retryTotal) . ' runs'
+                . ($retryJob['retried'] > 0 ? ' · ' . number_format($retryJob['retried']) . ' now fine' : '')
+                . ($retryJob['attention'] > 0 ? ', <strong class="adif-imp-job-alert">' . number_format($retryJob['attention']) . ' still need attention</strong>' : '')
+                . ($retryJob['skipped'] > 0 ? ', ' . number_format($retryJob['skipped']) . ' no longer needed a retry' : '')
+                . ($retryJob['failed'] > 0 ? ', ' . number_format($retryJob['failed']) . " couldn't be retried" : '')
+                . ' · requested by ' . adif_imp_h($retryJob['requested_by']) . ' ' . adif_imp_h(adif_imp_ago($retryJob['requested_at']))
+                . ($retryJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($retryJob['cancelled_by'] ?? '?') : '')
+                . ($retryJob['status'] === 'failed' ? ' · ' . adif_imp_h($retryJob['message'] ?? '') : ''),
+            'cancel' => $retryActive ? adif_imp_cancel_form($module, 'adif_retry_action', $recordFilter,
+                'Cancel retry all? The retries already run stay.') : '',
+        ];
+    }
+
+    if ($canRetry && ($importAllActive || $recentlyOver($importAllJob))) {
+        $importAllTotal = max(1, count($importAllJob['places']));
+        $importAllDone = min($importAllTotal, (int) $importAllJob['next']);
+        $jobRows[] = [
+            'name' => 'Import never-imported',
+            'pill' => match ($importAllJob['status']) {
+                'waiting' => ['adif-status-stale', 'Queued'],
+                'running' => ['adif-status-stale', 'Running'],
+                'done' => ['adif-status-ok', 'Finished'],
+                'cancelled' => ['adif-status-none', 'Cancelled'],
+                default => ['adif-status-error', 'Stopped'],
+            },
+            'percent' => $importAllDone / $importAllTotal * 100,
+            'detail' => number_format($importAllDone) . ' of ' . number_format($importAllTotal) . ' places'
+                . ($importAllJob['imported'] > 0 ? ' · ' . number_format($importAllJob['imported']) . ' imported' : '')
+                . ($importAllJob['attention'] > 0 ? ', <strong class="adif-imp-job-alert">' . number_format($importAllJob['attention']) . ' need attention</strong>' : '')
+                . ($importAllJob['skipped'] > 0 ? ', ' . number_format($importAllJob['skipped']) . ' no longer needed or not ready' : '')
+                . ($importAllJob['failed'] > 0 ? ', ' . number_format($importAllJob['failed']) . " couldn't be imported" : '')
+                . ' · requested by ' . adif_imp_h($importAllJob['requested_by']) . ' ' . adif_imp_h(adif_imp_ago($importAllJob['requested_at']))
+                . ($importAllJob['status'] === 'cancelled' ? ' · cancelled by ' . adif_imp_h($importAllJob['cancelled_by'] ?? '?') : '')
+                . ($importAllJob['status'] === 'failed' ? ' · ' . adif_imp_h($importAllJob['message'] ?? '') : ''),
+            'cancel' => $importAllActive ? adif_imp_cancel_form($module, 'adif_import_all_action', $recordFilter,
+                'Cancel import all? The imports already run stay.') : '',
+        ];
+    }
+    ?>
+    <?php if (!empty($jobRows)): ?>
+        <section class="adif-imp-activity" id="adif-imp-activity" aria-label="Background jobs">
+            <?php foreach ($jobRows as $row): ?>
+                <div class="adif-imp-job">
+                    <strong class="adif-imp-job-name"><?= adif_imp_h($row['name']) ?></strong>
+                    <span class="adif-status-pill <?= $row['pill'][0] ?>"><?= adif_imp_h($row['pill'][1]) ?></span>
+                    <?php if ($row['percent'] !== null): ?>
+                        <span class="adif-imp-job-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+                              aria-valuenow="<?= (int) round($row['percent']) ?>" aria-label="<?= adif_imp_h($row['name']) ?> progress"><span style="width: <?= round($row['percent'], 1) ?>%"></span></span>
+                    <?php endif; ?>
+                    <span class="adif-imp-job-detail"><?= $row['detail'] ?></span>
+                    <?= $row['cancel'] ?>
+                </div>
+            <?php endforeach; ?>
+            <?php if ($refreshActive || $retryActive || $importAllActive): ?>
+                <p class="adif-imp-job-note">Background jobs keep running if you leave this page. Reload it to see their progress.</p>
+            <?php endif; ?>
+        </section>
+    <?php else: ?>
+        <span id="adif-imp-activity"></span>
+    <?php endif; ?>
 
     <?php if ($recordStatus !== null): ?>
         <section class="adif-dt-card adif-imp-record">
@@ -446,246 +720,207 @@ function adif_imp_instrument($run)
         </section>
     <?php endif; ?>
 
-    <?php if ($queueError !== null): ?>
-        <div class="adif-alert adif-alert-error" role="alert">Couldn't read the background import queue:
-            <?= adif_imp_h($queueError) ?></div>
-    <?php elseif (!empty($queuedImports)): ?>
-        <section class="adif-imp-never adif-imp-queue" id="adif-imp-queue">
-            <h4>Queued: <?= count($queuedImports) ?> import<?= count($queuedImports) === 1 ? '' : 's' ?> waiting to
-                run in the background<?= $recordFilter !== '' ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></h4>
-            <p class="adif-imp-explain">Imports queued after survey submissions, so respondents don't wait on the
-                APIs. REDCap's cron runs them about once a minute; the queue last ran
-                <strong><?= $queueLastRun > 0 ? adif_imp_h(adif_imp_ago($queueLastRun)) : 'never' ?></strong>.
-                Each one then appears in the run list below like any other import.</p>
-            <?php if ($queueOverdue): ?>
-                <div class="adif-alert adif-alert-error" role="alert">The oldest has been waiting since
-                    <?= adif_imp_h(date('Y-m-d H:i', $queueOldest)) ?>. REDCap's cron may not be running ADIF's job
-                    (<code>adif_import_queue</code>) &mdash; ask your REDCap administrator to check it.<?= $canRetry
-                        ? ' In the meantime you can run them from here.' : '' ?></div>
-            <?php endif; ?>
-            <?php if ($canRetry): ?>
-                <div class="adif-imp-toolbar">
-                    <button type="button" id="adif-imp-run-queue" class="btn btn-primaryrc btn-sm"
-                            title="Runs this project's queued imports now instead of waiting for the cron, a few at a time">
-                        Run queued imports now
-                    </button>
-                    <span id="adif-imp-queue-progress" class="adif-imp-progress" aria-live="polite"></span>
-                </div>
-            <?php endif; ?>
-            <div class="adif-imp-scroll">
-                <table class="adif-headers-table adif-imp-never-table">
-                    <thead>
-                        <tr>
-                            <th>Record</th>
-                            <th>Event</th>
-                            <th>Instrument</th>
-                            <th>Queued</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach (array_slice($queuedImports, 0, $queueShownCap) as $item): ?>
-                            <?php $eventName = $module->importEventName($pid, $item['event_id']); ?>
-                            <tr>
-                                <td><?= adif_imp_record_link($item['record'], $pid) ?></td>
-                                <td><?= $eventName !== null ? adif_imp_h($eventName) : 'Single event' ?></td>
-                                <td><?= $item['instrument'] !== null ? adif_imp_h($item['instrument'])
-                                        . ($item['repeat_instance'] > 1 ? ' #' . (int) $item['repeat_instance'] : '') : '&mdash;' ?></td>
-                                <td title="<?= adif_imp_h(date('Y-m-d H:i:s', $item['queued'])) ?>"><?= adif_imp_h(adif_imp_ago($item['queued'])) ?></td>
-                                <td><?= $item['attempts'] > 0
-                                        ? '<span class="adif-status-pill adif-status-stale">Stopped partway ' . (int) $item['attempts']
-                                            . ' time' . ($item['attempts'] === 1 ? '' : 's') . '</span>'
-                                        : '<span class="adif-status-pill adif-status-none">Waiting</span>' ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
+    <section class="adif-imp-runs" id="adif-imp-runs">
+        <div class="adif-imp-runs-head">
+            <h4>Import runs<?= $recordFilter !== '' ? ' for record ' . adif_imp_h($recordFilter) : '' ?></h4>
+            <nav class="adif-imp-tabs" aria-label="Show runs by outcome">
+                <?php foreach (['' => 'All', 'attention' => 'Needs attention', 'dismissed' => 'Dismissed', 'stale' => 'From stored data', 'ok' => 'OK'] as $key => $label): ?>
+                    <?php $tabCount = $key === '' ? count($allRuns) : (int) ($outcomeCounts[$key] ?? 0); ?>
+                    <a href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['status' => $key, 'p' => 1])) ?>"
+                       class="adif-imp-tab<?= $statusFilter === $key ? ' is-active' : '' ?><?= $key === 'attention' && $tabCount > 0 ? ' is-alert' : '' ?>"
+                       <?= $statusFilter === $key ? 'aria-current="true"' : '' ?>>
+                        <?= adif_imp_h($label) ?> <span class="adif-imp-tab-count"><?= number_format($tabCount) ?></span>
+                    </a>
+                <?php endforeach; ?>
+            </nav>
+        </div>
+
+    <?php if (empty($runs)): ?>
+        <div class="adif-alert adif-alert-empty">
+            <?= $statusFilter !== '' || $recordFilter !== '' ? 'No runs match these filters.' : 'No import runs are logged yet.' ?>
+        </div>
+        <?php if ($diagnostics !== null && $diagnostics['entries'] > 0 && $recordFilter === '' && $statusFilter === ''): ?>
+            <div class="adif-alert adif-alert-error">
+                <strong>Debug:</strong> this project's module log holds <?= (int) $diagnostics['entries'] ?> import
+                entr<?= $diagnostics['entries'] === 1 ? 'y' : 'ies' ?>
+                (<?= (int) $diagnostics['with_run_id'] ?> with a run_id, <?= (int) $diagnostics['request_entries'] ?>
+                per-request entries), but none could be grouped into runs. The newest entry:
+                <code style="white-space: pre-wrap; word-break: break-word;"><?= adif_imp_h(json_encode($diagnostics['sample'])) ?></code>
+                &mdash; if its run_id is empty, it was logged before runs had ids; send this JSON along with a bug report.
             </div>
-            <?php if (count($queuedImports) > $queueShownCap): ?>
-                <p class="adif-imp-note">Showing the oldest <?= $queueShownCap ?> of <?= count($queuedImports) ?>.</p>
-            <?php endif; ?>
-        </section>
-    <?php elseif ($runInBackground): ?>
-        <p class="adif-imp-note adif-imp-queue-idle">Imports run in the background after each survey submission.
-            Nothing is waiting; the queue last ran <?= $queueLastRun > 0 ? adif_imp_h(adif_imp_ago($queueLastRun))
-                : 'never &mdash; if surveys have been submitted since the module was enabled, check that REDCap\'s cron is running' ?>.</p>
+        <?php endif; ?>
+        <?php if ($diagnostics !== null && ($diagnostics['without_project'] ?? 0) > 0): ?>
+            <div class="adif-alert adif-alert-error">
+                <strong>Debug:</strong> <?= (int) $diagnostics['without_project'] ?> import
+                entr<?= $diagnostics['without_project'] === 1 ? 'y was' : 'ies were' ?> logged without a project, so
+                no project's Imports page can show <?= $diagnostics['without_project'] === 1 ? 'it' : 'them' ?>.
+                Runs logged from now on carry their project explicitly.
+            </div>
+        <?php endif; ?>
     <?php else: ?>
-        <p class="adif-imp-note adif-imp-queue-idle">Imports run while survey respondents wait (<em>run each import while the
-            survey respondent waits</em> is ticked in this project's ADIF settings).</p>
-    <?php endif; ?>
+        <div class="adif-imp-table-wrap">
+            <table class="adif-imp-runs-table">
+                <thead>
+                    <tr>
+                        <th class="adif-imp-col-toggle"><span class="adif-sr-only">Details</span></th>
+                        <th>When</th>
+                        <th>Requested by</th>
+                        <th>Record</th>
+                        <th>Event</th>
+                        <th>Instrument</th>
+                        <th class="adif-imp-col-num">Requests</th>
+                        <th>Outcome</th>
+                    </tr>
+                </thead>
+                <?php foreach ($pageRuns as $run): ?>
+                    <?php $detailId = 'adif-imp-run-' . $run['run_id']; ?>
+                    <tbody class="adif-imp-run<?= match ($run['outcome']) { 'attention' => ' is-attention', 'dismissed' => ' is-dismissed', 'stale' => ' is-stale', default => '' } ?>"
+                           data-run-id="<?= adif_imp_h($run['run_id']) ?>">
+                        <tr class="adif-imp-run-summary">
+                            <td class="adif-imp-col-toggle">
+                                <button type="button" class="adif-imp-toggle" aria-expanded="false" aria-controls="<?= adif_imp_h($detailId) ?>"
+                                        title="Show this run's details"><span aria-hidden="true">&#9656;</span><span class="adif-sr-only">Details</span></button>
+                            </td>
+                            <td class="adif-imp-when" title="<?= adif_imp_h(date('Y-m-d H:i:s', $run['logged'])) ?>"><?= adif_imp_h(date('Y-m-d H:i', $run['logged'])) ?></td>
+                            <td class="adif-imp-user"><?= adif_imp_h($run['user'] !== '' ? $run['user'] : '?') ?></td>
+                            <td class="adif-imp-rec"><?= adif_imp_record_link($run['record'], $pid) ?></td>
+                            <td><?= $run['event_name'] !== null ? adif_imp_h($run['event_name']) : 'Single event' ?></td>
+                            <td><?= adif_imp_instrument($run) ?></td>
+                            <td class="adif-imp-col-num"><?= (int) $run['requests'] ?></td>
+                            <td><?= adif_imp_pill($run['outcome'], $module->importOutcomeLabel($run['outcome'])) ?></td>
+                        </tr>
+                        <tr class="adif-imp-run-detail" id="<?= adif_imp_h($detailId) ?>" hidden>
+                            <td colspan="8">
+                            <p class="adif-imp-desc"><?= adif_imp_h($run['description'] !== '' ? $run['description'] : 'Import run') ?>
+                                &middot; run_id <?= adif_imp_h($run['run_id']) ?>
+                                &middot; <?= (int) $run['api_calls'] ?> API call<?= (int) $run['api_calls'] === 1 ? '' : 's' ?>
+                                &middot; <?= adif_imp_h($run['elapsed_ms'] !== null ? $run['elapsed_ms'] . ' ms' : '?') ?></p>
 
-    <section class="adif-dt-card adif-imp-refresh" id="adif-imp-refresh">
-        <h4>Refresh all records</h4>
-        <p class="adif-imp-explain">Runs the import again for every record<?= $module->adifVisibleRecords($pid) !== null
-            ? ' in your data access group' : '' ?>: each event and instance with data gets its mapped fields filled with
-            what the APIs return now, replacing the values there. Useful after a new data release, or after changing
-            the mappings. It runs in the background only during off-peak hours,
-            <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?></strong> to
-            <strong><?= adif_imp_h(adif_imp_hour($refreshWindow['end'])) ?></strong> server time (it's
-            <?= adif_imp_h(date('H:i')) ?> now), within the server's limit of <?= (int) $refreshWindow['per_minute'] ?>
-            background imports a minute, which every project's background imports share, so a large project can take
-            several nights. Each import is listed below like any other
-            run.</p>
+                            <?php if ($run['outcome'] === 'attention'): ?>
+                                <div class="adif-alert adif-alert-error adif-imp-status-note">Needs running again &mdash; <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                            <?php elseif ($run['outcome'] === 'dismissed'): ?>
+                                <div class="adif-alert adif-alert-empty adif-imp-status-note"><?= adif_imp_dismissed_note($run) ?>
+                                    It no longer counts as needing attention; left empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                            <?php elseif ($run['outcome'] === 'stale'): ?>
+                                <div class="adif-alert adif-alert-empty">Answered from stored data during an API outage; its fields
+                                    were filled. <?= nl2br(adif_imp_h($run['notices'])) ?></div>
+                            <?php endif; ?>
 
-        <?php if ($refreshNotice !== null): ?>
-            <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$refreshNotice[0]] ?>"
-                 role="status"><?= adif_imp_h($refreshNotice[1]) ?></div>
-        <?php endif; ?>
+                            <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
+                                <?= adif_imp_actions($run) ?>
+                            <?php endif; ?>
 
-        <?php if ($refreshJob !== null): ?>
-            <?php
-            $total = max(1, (int) $refreshJob['record_count']);
-            $done = min($total, (int) $refreshJob['next']);
-            [$pillClass, $pillText] = match ($refreshJob['status']) {
-                'waiting' => ['adif-status-stale', $refreshWindow['open'] ? 'Starting' : 'Waiting for off-peak hours'],
-                'running' => ['adif-status-stale', $refreshWindow['open'] ? 'Running' : 'Paused until off-peak hours'],
-                'done' => ['adif-status-ok', 'Finished'],
-                'cancelled' => ['adif-status-none', 'Cancelled'],
-                default => ['adif-status-error', 'Stopped'],
-            };
-            // A rough estimate for a refresh that has started: its imports per record so far, at the server's pace
-            $minutesLeft = null;
-            if ($refreshActive && $done > 0) {
-                $minutesLeft = (int) ceil(($refreshJob['imports'] / $done) * ($total - $done) / $refreshWindow['per_minute']);
-            }
-            ?>
-            <div class="adif-imp-refresh-status">
-                <span class="adif-status-pill <?= $pillClass ?>"><?= adif_imp_h($pillText) ?></span>
-                <span><?= number_format($done) ?> of <?= number_format($total) ?> record<?= $total === 1 ? '' : 's' ?></span>
-                <span><?= number_format((int) $refreshJob['imports']) ?> import<?= (int) $refreshJob['imports'] === 1 ? '' : 's' ?> run</span>
-                <?php if ((int) $refreshJob['attention'] > 0): ?>
-                    <span class="adif-imp-refresh-attention"><?= number_format((int) $refreshJob['attention']) ?> needing attention</span>
-                <?php endif; ?>
-                <?php if ((int) $refreshJob['skipped'] > 0): ?>
-                    <span title="Places whose lookup values (an address, say) aren't in the record, so there was nothing to look up"><?= number_format((int) $refreshJob['skipped']) ?> skipped: lookup values missing</span>
-                <?php endif; ?>
-            </div>
-            <div class="adif-imp-refresh-bar" aria-hidden="true"><span style="width: <?= round($done / $total * 100, 1) ?>%"></span></div>
-            <p class="adif-imp-note">
-                Requested by <?= adif_imp_h($refreshJob['requested_by']) ?> on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['requested_at'])) ?>,
-                <?= !empty($refreshJob['bypass_cache']) ? 'calling the APIs for everything' : 'reusing stored data where the cache allows' ?>.
-                <?php if (!empty($refreshJob['last_worked_at'])): ?>
-                    Last worked on <?= adif_imp_h(adif_imp_ago($refreshJob['last_worked_at'])) ?>.
-                <?php endif; ?>
-                <?php if ($refreshJob['status'] === 'waiting' && !$refreshWindow['open']): ?>
-                    It starts at <?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?>.
-                <?php elseif ($refreshJob['status'] === 'running' && !$refreshWindow['open']): ?>
-                    It carries on at <?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?>.
-                <?php endif; ?>
-                <?php if ($minutesLeft !== null): ?>
-                    Roughly <?= $minutesLeft < 90 ? $minutesLeft . ' minute' . ($minutesLeft === 1 ? '' : 's')
-                        : round($minutesLeft / 60, 1) . ' hours' ?> of off-peak time to go, if nothing else is using the server's import limit.
-                <?php endif; ?>
-                <?php if ($refreshJob['status'] === 'cancelled'): ?>
-                    Cancelled by <?= adif_imp_h($refreshJob['cancelled_by'] ?? '?') ?> on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>.
-                <?php elseif ($refreshJob['status'] === 'done'): ?>
-                    Finished on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>.
-                <?php elseif ($refreshJob['status'] === 'failed'): ?>
-                    Stopped on <?= adif_imp_h(date('Y-m-d H:i', (int) $refreshJob['finished_at'])) ?>: <?= adif_imp_h($refreshJob['message'] ?? '') ?>
-                <?php endif; ?>
-            </p>
-        <?php endif; ?>
+                            <?php if (!empty($run['request_logs'])): ?>
+                                <div class="adif-imp-scroll">
+                                    <table class="adif-headers-table adif-imp-requests">
+                                        <thead>
+                                            <tr>
+                                                <th>Source</th>
+                                                <th>Path</th>
+                                                <th>Outcome</th>
+                                                <th>HTTP</th>
+                                                <th>ms</th>
+                                                <th>Fields saved</th>
+                                                <th>Fields skipped</th>
+                                                <th>Not populated</th>
+                                                <th>Error</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php foreach ($run['request_logs'] as $request): ?>
+                                                <tr>
+                                                    <td><?= adif_imp_h($request['source'] ?? '') ?></td>
+                                                    <td class="adif-imp-path"><?= adif_imp_h($request['path'] ?? '') ?></td>
+                                                    <td><?= adif_imp_h($request['outcome'] ?? '') ?></td>
+                                                    <td><?= adif_imp_h($request['http_status'] ?? '') !== '' ? adif_imp_h($request['http_status'] ?? '') : '&mdash;' ?></td>
+                                                    <td><?= adif_imp_h($request['response_ms'] ?? '') !== '' ? adif_imp_h($request['response_ms'] ?? '') : '&mdash;' ?></td>
+                                                    <td><?= adif_imp_h($request['fields_saved'] ?? '') !== '' ? adif_imp_h($request['fields_saved'] ?? '') : '&mdash;' ?></td>
+                                                    <td><?= adif_imp_h($request['fields_skipped'] ?? '') !== '' ? adif_imp_h($request['fields_skipped'] ?? '') : '&mdash;' ?></td>
+                                                    <td><?= adif_imp_h($request['fields_not_populated'] ?? '') !== '' ? adif_imp_h($request['fields_not_populated'] ?? '') : '&mdash;' ?></td>
+                                                    <td><?= adif_imp_h($request['error'] ?? '') !== '' ? adif_imp_h($request['error'] ?? '') : '&mdash;' ?></td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            <?php endif; ?>
 
-        <?php if ($canRefresh): ?>
-            <?php if ($refreshActive): ?>
-                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>" class="adif-imp-toolbar"
-                      onsubmit="return confirm('Cancel the refresh? Imports it has already run stay; the rest of the records are left as they are.');">
-                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                    <input type="hidden" name="adif_refresh_action" value="cancel">
-                    <button type="submit" class="btn btn-defaultrc btn-sm">Cancel refresh</button>
-                </form>
-            <?php else: ?>
-                <?php
-                $refreshConfirm = 'Refresh every record' . ($module->adifVisibleRecords($pid) !== null ? ' in your data access group' : '')
-                    . '? The values the APIs return will replace what\'s in the mapped fields now. It runs between '
-                    . adif_imp_hour($refreshWindow['start']) . ' and ' . adif_imp_hour($refreshWindow['end'])
-                    . ' server time, and can be cancelled from this page.';
-                ?>
-                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>" class="adif-imp-toolbar"
-                      onsubmit="return confirm(<?= adif_imp_h(json_encode($refreshConfirm)) ?>);">
-                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                    <input type="hidden" name="adif_refresh_action" value="start">
-                    <label class="adif-imp-bypass" title="On (recommended): every import calls the APIs, so the refresh gets current data. Off: responses stored by the cache are reused where each source's settings allow.">
-                        <input type="checkbox" name="bypass_cache" value="1" checked>
-                        Skip stored data and call the APIs
-                    </label>
-                    <button type="submit" class="btn btn-primaryrc btn-sm">Refresh all records</button>
-                </form>
+                            <?php if ($run['skipped'] !== ''): ?>
+                                <p class="adif-imp-note"><strong>Skipped:</strong> <?= nl2br(adif_imp_h($run['skipped'])) ?></p>
+                            <?php endif; ?>
+                            <?php if ($run['notices'] !== '' && $run['outcome'] !== 'stale'): ?>
+                                <p class="adif-imp-note"><strong>Notices:</strong> <?= nl2br(adif_imp_h($run['notices'])) ?></p>
+                            <?php endif; ?>
+
+                            <div class="adif-imp-retry-result"></div>
+
+                                <div class="adif-imp-retry-result"></div>
+                            </td>
+                        </tr>
+                    </tbody>
+                <?php endforeach; ?>
+            </table>
+        </div>
+
+        <?php $firstShown = ($currentPage - 1) * $perPage + 1; ?>
+        <div class="adif-imp-pager">
+            <span class="adif-imp-pager-count">Showing <?= number_format($firstShown) ?>&ndash;<?= number_format($firstShown + count($pageRuns) - 1) ?>
+                of <?= number_format(count($runs)) ?> run<?= count($runs) === 1 ? '' : 's' ?><?= count($allRuns) >= $runListCap
+                    ? ' (the latest ' . $runListCap . ' are listed)' : '' ?></span>
+            <?php if ($pageCount > 1): ?>
+                <nav class="adif-imp-pages" aria-label="Pages of runs">
+                    <?php if ($currentPage > 1): ?>
+                        <a href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['p' => $currentPage - 1])) ?>" rel="prev">&lsaquo; Newer</a>
+                    <?php else: ?>
+                        <span class="is-disabled">&lsaquo; Newer</span>
+                    <?php endif; ?>
+                    <?php foreach (adif_imp_page_numbers($currentPage, $pageCount) as $number): ?>
+                        <?php if ($number === null): ?>
+                            <span class="adif-imp-pages-gap">&hellip;</span>
+                        <?php elseif ($number === $currentPage): ?>
+                            <span class="is-current" aria-current="page"><?= $number ?></span>
+                        <?php else: ?>
+                            <a href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['p' => $number])) ?>"><?= $number ?></a>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                    <?php if ($currentPage < $pageCount): ?>
+                        <a href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['p' => $currentPage + 1])) ?>" rel="next">Older &rsaquo;</a>
+                    <?php else: ?>
+                        <span class="is-disabled">Older &rsaquo;</span>
+                    <?php endif; ?>
+                </nav>
             <?php endif; ?>
-        <?php else: ?>
-            <p class="adif-imp-note">Users with Project Design rights can start or cancel a refresh.</p>
-        <?php endif; ?>
+            <span class="adif-imp-per-page">Per page:
+                <?php foreach ([25, 50, 100] as $option): ?>
+                    <?php if ($option === $perPage): ?>
+                        <strong aria-current="true"><?= $option ?></strong>
+                    <?php else: ?>
+                        <a href="<?= adif_imp_h(adif_imp_url($hiddenParams, $runFilters, ['per_page' => $option, 'p' => 1])) ?>"><?= $option ?></a>
+                    <?php endif; ?>
+                <?php endforeach; ?>
+            </span>
+        </div>
+    <?php endif; ?>
     </section>
 
     <?php if ($neverImportedError !== null): ?>
         <div class="adif-alert adif-alert-error" role="alert">Couldn't check for records that have never been
             imported: <?= adif_imp_h($neverImportedError) ?></div>
-    <?php elseif (!empty($neverImported) || ($canRetry && $importAllRecent)): ?>
-        <section class="adif-dt-card adif-imp-never" id="adif-imp-never">
-            <h4>Never imported: <?= count($neverImported) ?> place<?= count($neverImported) === 1 ? '' : 's' ?>
-                in <?= $neverRecordCount ?> record<?= $neverRecordCount === 1 ? '' : 's' ?><?= $recordFilter !== ''
-                    ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></h4>
+    <?php elseif (!empty($neverImported)): ?>
+        <details class="adif-imp-panel adif-imp-never" id="adif-imp-never">
+            <summary>
+                <span class="adif-imp-panel-title">Never imported</span>
+                <span class="adif-imp-tab-count"><?= number_format(count($neverImported)) ?></span>
+                <span class="adif-imp-panel-hint">place<?= count($neverImported) === 1 ? '' : 's' ?> in <?= $neverRecordCount ?>
+                    record<?= $neverRecordCount === 1 ? '' : 's' ?> with data but no import yet<?= $recordFilter !== ''
+                        ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></span>
+            </summary>
             <p class="adif-imp-explain">These records have data in an event (or instance) where every mapped field is
                 still empty and no import has ever been tried &mdash; usually records entered before ADIF was enabled,
                 or before these fields were mapped. Imports run when a survey is submitted, so these won't fill on their
-                own. An import started here works like a survey's: it calls the APIs (or uses stored data, as each
-                source's cache settings allow), fills the empty fields, and is logged and listed below like any other run.</p>
-
-            <?php if ($canRetry && (!empty($neverImportable) || $importAllRecent)): ?>
-                <?php
-                $importAllTotal = $importAllJob !== null ? max(1, count($importAllJob['places'])) : 1;
-                $importAllDone = $importAllJob !== null ? min($importAllTotal, (int) $importAllJob['next']) : 0;
-                // The counts of a job, for its progress line and its summary once it's over
-                $importAllCounts = $importAllJob === null ? '' : implode(', ', array_filter([
-                    $importAllJob['imported'] > 0 ? number_format($importAllJob['imported']) . ' imported' : '',
-                    $importAllJob['attention'] > 0 ? number_format($importAllJob['attention']) . ' need attention' : '',
-                    $importAllJob['skipped'] > 0 ? number_format($importAllJob['skipped']) . ' no longer needed or not ready' : '',
-                    $importAllJob['failed'] > 0 ? number_format($importAllJob['failed']) . " couldn't be imported" : '',
-                ]));
-                ?>
-                <div class="adif-imp-toolbar" id="adif-imp-import-all-bar">
-                    <?php if ($importAllActive): ?>
-                        <span class="adif-status-pill adif-status-stale"><?= $importAllJob['status'] === 'waiting' ? 'Import all queued' : 'Importing in the background' ?></span>
-                        <span class="adif-imp-progress"><?= number_format($importAllDone) ?> of <?= number_format($importAllTotal) ?> done<?= $importAllCounts !== '' ? ': ' . adif_imp_h($importAllCounts) : '' ?>.
-                            Requested by <?= adif_imp_h($importAllJob['requested_by']) ?> <?= adif_imp_h(adif_imp_ago($importAllJob['requested_at'])) ?>.
-                            Reload the page to see its progress.</span>
-                        <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                              onsubmit="return confirm('Cancel import all? The imports already run stay.');">
-                            <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                            <input type="hidden" name="adif_import_all_action" value="cancel">
-                            <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
-                            <button type="submit" class="btn btn-defaultrc btn-sm">Cancel</button>
-                        </form>
-                    <?php elseif (!empty($neverImportable)): ?>
-                        <?php
-                        $importAllConfirm = 'Run the first import for ' . count($neverImportable) . ' place'
-                            . (count($neverImportable) === 1 ? '' : 's') . '? Each one calls the APIs its mappings use and fills the'
-                            . ' empty fields. They run in the background, starting within a minute or so; you can leave this page.';
-                        ?>
-                        <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                              onsubmit="return confirm(<?= adif_imp_h(json_encode($importAllConfirm)) ?>);">
-                            <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                            <input type="hidden" name="adif_import_all_action" value="start">
-                            <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
-                            <button type="submit" class="btn btn-primaryrc btn-sm"
-                                    title="Queues the first import of every place listed that has the values its lookups need: <?= count($neverImportable) ?>, listed or not. They run in the background; one imported by then is left alone.">
-                                Import all (<?= count($neverImportable) ?>)
-                            </button>
-                        </form>
-                    <?php endif; ?>
-                    <?php if (!$importAllActive && $importAllJob !== null && (int) $importAllJob['finished_at'] >= time() - 86400): ?>
-                        <span class="adif-imp-progress">Last import all, requested by <?= adif_imp_h($importAllJob['requested_by']) ?>:
-                            <?= match ($importAllJob['status']) {
-                                'done' => 'finished ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])),
-                                'cancelled' => 'cancelled by ' . adif_imp_h($importAllJob['cancelled_by'] ?? '?') . ' ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])),
-                                default => 'stopped ' . adif_imp_h(adif_imp_ago($importAllJob['finished_at'])) . ': ' . adif_imp_h($importAllJob['message'] ?? ''),
-                            } ?>, <?= number_format($importAllDone) ?> of <?= number_format($importAllTotal) ?> done<?= $importAllCounts !== '' ? ' (' . adif_imp_h($importAllCounts) . ')' : '' ?>.</span>
-                    <?php endif; ?>
-                </div>
-                <?php if ($importAllNotice !== null): ?>
-                    <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$importAllNotice[0]] ?>"
-                         role="status"><?= adif_imp_h($importAllNotice[1]) ?></div>
-                <?php endif; ?>
+                own. Import them one at a time here, or all at once from <strong>Actions</strong>. An import started here
+                works like a survey's, and is logged and listed in the run table like any other run.</p>
+            <?php if ($canRetry): ?>
                 <script type="application/json" id="adif-imp-never-units"><?= json_encode(array_map(fn($unit) => [
                     'key' => $unit['key'],
                     'record' => $unit['record'],
@@ -693,14 +928,14 @@ function adif_imp_instrument($run)
                     'instrument' => $unit['instrument'] ?? '',
                     'instance' => $unit['repeat_instance'],
                 ], $neverImportable), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
-            <?php elseif (!$canRetry): ?>
+            <?php else: ?>
                 <p class="adif-imp-note">Users with View &amp; Edit rights on the mapped instruments can run these
                     imports from this page.</p>
             <?php endif; ?>
             <?php if (count($neverImportable) < count($neverImported)): ?>
                 <p class="adif-imp-note"><?= count($neverImported) - count($neverImportable) ?> can't be imported yet: a
-                    value the API lookup needs (an address, say) isn't in the record. They're left out of Import all;
-                    see each one's status.</p>
+                    value the API lookup needs (an address, say) isn't in the record. They're left out of Import
+                    never-imported records; see each one's status.</p>
             <?php endif; ?>
 
             <?php if (empty($neverImported)): ?>
@@ -754,174 +989,192 @@ function adif_imp_instrument($run)
             <?php endif; ?>
             <?php if (count($neverImported) > $neverShownCap): ?>
                 <p class="adif-imp-note">Showing the first <?= $neverShownCap ?> of <?= count($neverImported) ?>.<?= $canRetry
-                    ? ' Import all covers every one that can be imported, listed or not.' : '' ?></p>
+                    ? ' Import never-imported records covers every one that can be imported, listed or not.' : '' ?></p>
             <?php endif; ?>
-        </section>
+        </details>
     <?php endif; ?>
 
-    <?php if ($canRetry && (!empty($retryTargets) || $retryJob !== null || $retryNotice !== null)): ?>
-        <?php
-        $retryTotal = $retryJob !== null ? max(1, count($retryJob['run_ids'])) : 1;
-        $retryDone = $retryJob !== null ? min($retryTotal, (int) $retryJob['next']) : 0;
-        // The counts of a job, for its progress line and its summary once it's over
-        $retryCounts = $retryJob === null ? '' : implode(', ', array_filter([
-            $retryJob['retried'] > 0 ? number_format($retryJob['retried']) . ' now fine' : '',
-            $retryJob['attention'] > 0 ? number_format($retryJob['attention']) . ' still need attention' : '',
-            $retryJob['skipped'] > 0 ? number_format($retryJob['skipped']) . ' no longer needed a retry' : '',
-            $retryJob['failed'] > 0 ? number_format($retryJob['failed']) . " couldn't be retried" : '',
-        ]));
-        ?>
-        <div class="adif-imp-toolbar" id="adif-imp-retry-all-bar">
-            <label class="adif-imp-bypass" for="adif-imp-bypass" title="On (recommended): a retry calls the APIs even for requests the cache could answer, so data stored during an outage isn't reused. Off: stored responses are reused where they exist.">
-                <input type="checkbox" id="adif-imp-bypass" name="bypass_cache" value="1" form="adif-imp-retry-all-form" checked>
-                Skip stored data and call the APIs
-            </label>
-            <?php if ($retryActive): ?>
-                <span class="adif-status-pill adif-status-stale"><?= $retryJob['status'] === 'waiting' ? 'Retry all queued' : 'Retrying in the background' ?></span>
-                <span class="adif-imp-progress"><?= number_format($retryDone) ?> of <?= number_format($retryTotal) ?> done<?= $retryCounts !== '' ? ': ' . adif_imp_h($retryCounts) : '' ?>.
-                    Requested by <?= adif_imp_h($retryJob['requested_by']) ?> <?= adif_imp_h(adif_imp_ago($retryJob['requested_at'])) ?>.
-                    Reload the page to see its progress.</span>
-                <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                      onsubmit="return confirm('Cancel retry all? The retries already run stay.');">
-                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                    <input type="hidden" name="adif_retry_action" value="cancel">
-                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
-                    <button type="submit" class="btn btn-defaultrc btn-sm">Cancel</button>
-                </form>
-            <?php elseif (!empty($retryTargets)): ?>
-                <?php
-                $retryConfirm = 'Re-run ' . count($retryTargets) . ' failed import' . (count($retryTargets) === 1 ? '' : 's')
-                    . ($hiddenTargets > 0 ? " ($hiddenTargets not shown in this list)" : '')
-                    . '? The fields they map will be overwritten with the APIs\' current values. They run in the background,'
-                    . ' starting within a minute or so; you can leave this page.';
-                ?>
-                <form method="post" id="adif-imp-retry-all-form" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>"
-                      onsubmit="return confirm(<?= adif_imp_h(json_encode($retryConfirm)) ?>);">
-                    <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
-                    <input type="hidden" name="adif_retry_action" value="start">
-                    <input type="hidden" name="record" value="<?= adif_imp_h($recordFilter) ?>">
-                    <button type="submit" class="btn btn-primaryrc btn-sm"
-                            title="Queues a retry of every import whose latest run needs attention: <?= count($retryTargets) ?> among the last 500 runs<?= $hiddenTargets > 0 ? ", $hiddenTargets of them not shown in this list" : '' ?>. They run in the background; a failed run whose import has run again by then, or that was dismissed, is left alone.">
-                        Retry all failed (<?= count($retryTargets) ?>)
+    <?php if ($queueError !== null): ?>
+        <div class="adif-alert adif-alert-error" role="alert">Couldn't read the background import queue:
+            <?= adif_imp_h($queueError) ?></div>
+    <?php elseif (!empty($queuedImports)): ?>
+        <details class="adif-imp-panel adif-imp-queue" id="adif-imp-queue">
+            <summary>
+                <span class="adif-imp-panel-title">Queued imports</span>
+                <span class="adif-imp-tab-count"><?= number_format(count($queuedImports)) ?></span>
+                <span class="adif-imp-panel-hint">waiting to run in the background<?= $recordFilter !== ''
+                    ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></span>
+            </summary>
+            <p class="adif-imp-explain">Imports queued after survey submissions, so respondents don't wait on the
+                APIs. REDCap's cron runs them about once a minute; the queue last ran
+                <strong><?= $queueLastRun > 0 ? adif_imp_h(adif_imp_ago($queueLastRun)) : 'never' ?></strong>.
+                Each one then appears in the run table like any other import.</p>
+            <div class="adif-imp-scroll">
+                <table class="adif-headers-table adif-imp-never-table">
+                    <thead>
+                        <tr>
+                            <th>Record</th>
+                            <th>Event</th>
+                            <th>Instrument</th>
+                            <th>Queued</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach (array_slice($queuedImports, 0, $queueShownCap) as $item): ?>
+                            <?php $eventName = $module->importEventName($pid, $item['event_id']); ?>
+                            <tr>
+                                <td><?= adif_imp_record_link($item['record'], $pid) ?></td>
+                                <td><?= $eventName !== null ? adif_imp_h($eventName) : 'Single event' ?></td>
+                                <td><?= $item['instrument'] !== null ? adif_imp_h($item['instrument'])
+                                        . ($item['repeat_instance'] > 1 ? ' #' . (int) $item['repeat_instance'] : '') : '&mdash;' ?></td>
+                                <td title="<?= adif_imp_h(date('Y-m-d H:i:s', $item['queued'])) ?>"><?= adif_imp_h(adif_imp_ago($item['queued'])) ?></td>
+                                <td><?= $item['attempts'] > 0
+                                        ? '<span class="adif-status-pill adif-status-stale">Stopped partway ' . (int) $item['attempts']
+                                            . ' time' . ($item['attempts'] === 1 ? '' : 's') . '</span>'
+                                        : '<span class="adif-status-pill adif-status-none">Waiting</span>' ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if (count($queuedImports) > $queueShownCap): ?>
+                <p class="adif-imp-note">Showing the oldest <?= $queueShownCap ?> of <?= count($queuedImports) ?>.</p>
+            <?php endif; ?>
+        </details>
+    <?php endif; ?>
+
+    <?php if ($canRefresh && !$refreshActive): ?>
+        <dialog class="adif-imp-dialog" id="adif-imp-refresh-dialog" aria-labelledby="adif-imp-refresh-title">
+            <form method="post" action="<?= adif_imp_h($module->getUrl('pages/Imports.php')) ?>">
+                <input type="hidden" name="redcap_csrf_token" value="<?= adif_imp_h($module->getCSRFToken()) ?>">
+                <input type="hidden" name="adif_refresh_action" value="start">
+                <div class="adif-imp-dialog-head">
+                    <h4 id="adif-imp-refresh-title">Refresh all records</h4>
+                    <button type="button" class="adif-imp-dialog-close" data-close-dialog aria-label="Close">
+                        <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 3l8 8M11 3l-8 8"></path></svg>
                     </button>
-                </form>
-            <?php endif; ?>
-            <?php if (!$retryActive && $retryJob !== null && $retryJob['finished_at'] >= time() - 86400): ?>
-                <span class="adif-imp-progress">Last retry all, requested by <?= adif_imp_h($retryJob['requested_by']) ?>:
-                    <?= match ($retryJob['status']) {
-                        'done' => 'finished ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])),
-                        'cancelled' => 'cancelled by ' . adif_imp_h($retryJob['cancelled_by'] ?? '?') . ' ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])),
-                        default => 'stopped ' . adif_imp_h(adif_imp_ago($retryJob['finished_at'])) . ': ' . adif_imp_h($retryJob['message'] ?? ''),
-                    } ?>, <?= number_format($retryDone) ?> of <?= number_format($retryTotal) ?> done<?= $retryCounts !== '' ? ' (' . adif_imp_h($retryCounts) . ')' : '' ?>.</span>
-            <?php endif; ?>
-        </div>
-        <?php if ($retryNotice !== null): ?>
-            <div class="adif-alert <?= ['ok' => 'adif-imp-success', 'error' => 'adif-alert-error', 'empty' => 'adif-alert-empty'][$retryNotice[0]] ?>"
-                 role="status"><?= adif_imp_h($retryNotice[1]) ?></div>
-        <?php endif; ?>
-    <?php endif; ?>
-
-    <h4><?= count($runs) ?> run<?= count($runs) === 1 ? '' : 's' ?><?= $statusFilter !== ''
-        ? ' (' . adif_imp_h($module->importOutcomeLabel($statusFilter)) . ' only)' : '' ?></h4>
-
-    <?php if (empty($runs)): ?>
-        <div class="adif-alert adif-alert-empty">
-            <?= $statusFilter !== '' || $recordFilter !== '' ? 'No runs match these filters.' : 'No import runs are logged yet.' ?>
-        </div>
-        <?php if ($diagnostics !== null && $diagnostics['entries'] > 0 && $recordFilter === '' && $statusFilter === ''): ?>
-            <div class="adif-alert adif-alert-error">
-                <strong>Debug:</strong> this project's module log holds <?= (int) $diagnostics['entries'] ?> import
-                entr<?= $diagnostics['entries'] === 1 ? 'y' : 'ies' ?>
-                (<?= (int) $diagnostics['with_run_id'] ?> with a run_id, <?= (int) $diagnostics['request_entries'] ?>
-                per-request entries), but none could be grouped into runs. The newest entry:
-                <code style="white-space: pre-wrap; word-break: break-word;"><?= adif_imp_h(json_encode($diagnostics['sample'])) ?></code>
-                &mdash; if its run_id is empty, it was logged before runs had ids; send this JSON along with a bug report.
-            </div>
-        <?php endif; ?>
-        <?php if ($diagnostics !== null && ($diagnostics['without_project'] ?? 0) > 0): ?>
-            <div class="adif-alert adif-alert-error">
-                <strong>Debug:</strong> <?= (int) $diagnostics['without_project'] ?> import
-                entr<?= $diagnostics['without_project'] === 1 ? 'y was' : 'ies were' ?> logged without a project, so
-                no project's Imports page can show <?= $diagnostics['without_project'] === 1 ? 'it' : 'them' ?>.
-                Runs logged from now on carry their project explicitly.
-            </div>
-        <?php endif; ?>
-    <?php else: ?>
-        <?php foreach ($runs as $run): ?>
-            <details class="adif-imp-run<?= match ($run['outcome']) { 'attention' => ' is-attention', 'dismissed' => ' is-dismissed', 'stale' => ' is-stale', default => '' } ?>"
-                     data-run-id="<?= adif_imp_h($run['run_id']) ?>">
-                <summary>
-                    <span class="adif-imp-when" title="<?= adif_imp_h(date('Y-m-d H:i:s', $run['logged'])) ?>"><?= adif_imp_h(date('Y-m-d H:i', $run['logged'])) ?></span>
-                    <span class="adif-imp-user" title="Requested by"><?= adif_imp_h($run['user'] !== '' ? $run['user'] : '?') ?></span>
-                    <span class="adif-imp-rec"><?= adif_imp_record_link($run['record'], $pid) ?></span>
-                    <span class="adif-imp-event"><?= $run['event_name'] !== null ? adif_imp_h($run['event_name']) : 'Single event' ?></span>
-                    <span class="adif-imp-inst"><?= adif_imp_instrument($run) ?></span>
-                    <span class="adif-imp-reqs"><?= (int) $run['requests'] ?> request<?= (int) $run['requests'] === 1 ? '' : 's' ?></span>
-                    <?= adif_imp_pill($run['outcome'], $module->importOutcomeLabel($run['outcome'])) ?>
-                </summary>
-                <p class="adif-imp-desc"><?= adif_imp_h($run['description'] !== '' ? $run['description'] : 'Import run') ?>
-                    &middot; run_id <?= adif_imp_h($run['run_id']) ?>
-                    &middot; <?= (int) $run['api_calls'] ?> API call<?= (int) $run['api_calls'] === 1 ? '' : 's' ?>
-                    &middot; <?= adif_imp_h($run['elapsed_ms'] !== null ? $run['elapsed_ms'] . ' ms' : '?') ?></p>
-
-                <?php if ($run['outcome'] === 'attention'): ?>
-                    <div class="adif-alert adif-alert-error adif-imp-status-note">Needs running again &mdash; <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
-                <?php elseif ($run['outcome'] === 'dismissed'): ?>
-                    <div class="adif-alert adif-alert-empty adif-imp-status-note"><?= adif_imp_dismissed_note($run) ?>
-                        It no longer counts as needing attention; left empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
-                <?php elseif ($run['outcome'] === 'stale'): ?>
-                    <div class="adif-alert adif-alert-empty">Answered from stored data during an API outage; its fields
-                        were filled. <?= nl2br(adif_imp_h($run['notices'])) ?></div>
-                <?php endif; ?>
-
-                <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
-                    <?= adif_imp_actions($run) ?>
-                <?php endif; ?>
-
-                <?php if (!empty($run['request_logs'])): ?>
-                    <div class="adif-imp-scroll">
-                        <table class="adif-headers-table adif-imp-requests">
-                            <thead>
-                                <tr>
-                                    <th>Source</th>
-                                    <th>Path</th>
-                                    <th>Outcome</th>
-                                    <th>HTTP</th>
-                                    <th>ms</th>
-                                    <th>Fields saved</th>
-                                    <th>Fields skipped</th>
-                                    <th>Not populated</th>
-                                    <th>Error</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($run['request_logs'] as $request): ?>
-                                    <tr>
-                                        <td><?= adif_imp_h($request['source'] ?? '') ?></td>
-                                        <td class="adif-imp-path"><?= adif_imp_h($request['path'] ?? '') ?></td>
-                                        <td><?= adif_imp_h($request['outcome'] ?? '') ?></td>
-                                        <td><?= adif_imp_h($request['http_status'] ?? '') !== '' ? adif_imp_h($request['http_status'] ?? '') : '&mdash;' ?></td>
-                                        <td><?= adif_imp_h($request['response_ms'] ?? '') !== '' ? adif_imp_h($request['response_ms'] ?? '') : '&mdash;' ?></td>
-                                        <td><?= adif_imp_h($request['fields_saved'] ?? '') !== '' ? adif_imp_h($request['fields_saved'] ?? '') : '&mdash;' ?></td>
-                                        <td><?= adif_imp_h($request['fields_skipped'] ?? '') !== '' ? adif_imp_h($request['fields_skipped'] ?? '') : '&mdash;' ?></td>
-                                        <td><?= adif_imp_h($request['fields_not_populated'] ?? '') !== '' ? adif_imp_h($request['fields_not_populated'] ?? '') : '&mdash;' ?></td>
-                                        <td><?= adif_imp_h($request['error'] ?? '') !== '' ? adif_imp_h($request['error'] ?? '') : '&mdash;' ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-                <?php endif; ?>
-
-                <?php if ($run['skipped'] !== ''): ?>
-                    <p class="adif-imp-note"><strong>Skipped:</strong> <?= nl2br(adif_imp_h($run['skipped'])) ?></p>
-                <?php endif; ?>
-                <?php if ($run['notices'] !== '' && $run['outcome'] !== 'stale'): ?>
-                    <p class="adif-imp-note"><strong>Notices:</strong> <?= nl2br(adif_imp_h($run['notices'])) ?></p>
-                <?php endif; ?>
-
-                <div class="adif-imp-retry-result"></div>
-            </details>
-        <?php endforeach; ?>
+                </div>
+                <p>Runs the import again for every record<?= $module->adifVisibleRecords($pid) !== null ? ' in your data access group' : '' ?>:
+                    each event and instance with data gets its mapped fields filled with what the APIs return now,
+                    replacing the values there. Useful after a new data release, or after changing the mappings.</p>
+                <dl class="adif-imp-dialog-facts">
+                    <div><dt>Runs between</dt><dd><?= adif_imp_h(adif_imp_hour($refreshWindow['start'])) ?>&ndash;<?= adif_imp_h(adif_imp_hour($refreshWindow['end'])) ?></dd></div>
+                    <div><dt>Server time now</dt><dd><?= adif_imp_h(date('H:i')) ?></dd></div>
+                    <div><dt>Server limit</dt><dd><?= (int) $refreshWindow['per_minute'] ?> imports / min</dd></div>
+                    <div><dt>Shared with</dt><dd>every project's background imports</dd></div>
+                </dl>
+                <label class="adif-imp-dialog-check">
+                    <input type="checkbox" name="bypass_cache" value="1" checked>
+                    <span>Skip stored data and call the APIs
+                        <small>Recommended: the refresh gets current data rather than responses the cache stored.</small></span>
+                </label>
+                <p class="adif-imp-dialog-note">A large project can take several nights. You can leave the page: progress
+                    shows above the run table, where the refresh can be cancelled. Each import is listed like any other run.</p>
+                <div class="adif-imp-dialog-buttons">
+                    <button type="button" class="btn btn-defaultrc btn-sm" data-close-dialog>Cancel</button>
+                    <button type="submit" class="btn btn-primaryrc btn-sm">Start refresh</button>
+                </div>
+            </form>
+        </dialog>
     <?php endif; ?>
 </div>
+
+<script>
+    // The Actions menu, the refresh dialog, and the collapsed panels (Never imported, Queued imports)
+    // opened by the header's chips. Plain DOM, so they work for every user.
+    (function () {
+        var toggle = document.getElementById('adif-imp-actions-toggle');
+        var menu = document.getElementById('adif-imp-actions-menu');
+        function setMenu(open) {
+            if (!toggle || !menu) {
+                return;
+            }
+            menu.hidden = !open;
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open) {
+                var first = menu.querySelector('button:not([disabled])');
+                if (first) {
+                    first.focus();
+                }
+            }
+        }
+        if (toggle && menu) {
+            toggle.addEventListener('click', function () {
+                setMenu(menu.hidden);
+            });
+            document.addEventListener('click', function (event) {
+                if (!menu.hidden && !event.target.closest('.adif-imp-actions')) {
+                    setMenu(false);
+                }
+            });
+            document.addEventListener('keydown', function (event) {
+                if (event.key === 'Escape' && !menu.hidden) {
+                    setMenu(false);
+                    toggle.focus();
+                }
+            });
+            // Run queued imports now is handled by js/imports.js; close the menu so its progress shows
+            var runQueue = document.getElementById('adif-imp-run-queue');
+            if (runQueue) {
+                runQueue.addEventListener('click', function () {
+                    setMenu(false);
+                });
+            }
+        }
+
+        var dialog = document.getElementById('adif-imp-refresh-dialog');
+        var opener = document.getElementById('adif-imp-refresh-open');
+        if (dialog && opener && typeof dialog.showModal === 'function') {
+            opener.addEventListener('click', function () {
+                setMenu(false);
+                dialog.showModal();
+            });
+            dialog.querySelectorAll('[data-close-dialog]').forEach(function (button) {
+                button.addEventListener('click', function () {
+                    dialog.close();
+                });
+            });
+        } else if (opener) {
+            opener.disabled = true;   // a browser without <dialog>
+        }
+
+        // A link to #adif-imp-never or #adif-imp-queue opens that panel
+        function openFromHash() {
+            var target = location.hash ? document.getElementById(location.hash.slice(1)) : null;
+            if (target && target.tagName === 'DETAILS') {
+                target.open = true;
+                target.scrollIntoView({ block: 'start' });
+            }
+        }
+        window.addEventListener('hashchange', openFromHash);
+        openFromHash();
+    })();
+
+    // Opening a run's details: its toggle button, or a click anywhere on its row that isn't a link,
+    // button or form control. Works for every user, so it's here rather than in js/imports.js, which
+    // only loads for users who can retry.
+    (function () {
+        function toggle(button) {
+            var open = button.getAttribute('aria-expanded') !== 'true';
+            var detail = document.getElementById(button.getAttribute('aria-controls'));
+            button.setAttribute('aria-expanded', open ? 'true' : 'false');
+            button.title = open ? "Hide this run's details" : "Show this run's details";
+            button.closest('.adif-imp-run').classList.toggle('is-open', open);
+            if (detail) {
+                detail.hidden = !open;
+            }
+        }
+        document.addEventListener('click', function (event) {
+            var row = event.target.closest('.adif-imp-run-summary');
+            if (!row) {
+                return;
+            }
+            var button = event.target.closest('.adif-imp-toggle');
+            if (!button && event.target.closest('a, button, input, select, textarea, label')) {
+                return;
+            }
+            toggle(button || row.querySelector('.adif-imp-toggle'));
+        });
+    })();
+</script>

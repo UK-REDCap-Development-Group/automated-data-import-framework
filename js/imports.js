@@ -27,9 +27,12 @@
         return $('#adif-imp-bypass').is(':checked');
     }
 
-    // Brings a run's pill and accordion colouring up to date with its outcome
+    // Each run in the table is a <tbody class="adif-imp-run" data-run-id> holding its summary row and its
+    // details row (pages/Imports.php); $details below is that <tbody>.
+
+    // Brings a run's pill and row colouring up to date with its outcome
     function setOutcome($details, outcome) {
-        $details.find('summary .adif-status-pill')
+        $details.find('.adif-imp-run-summary .adif-status-pill')
             .removeClass('adif-status-error adif-status-stale adif-status-ok adif-status-none')
             .addClass(PILL_CLASS[outcome] || 'adif-status-none')
             .text(LABELS[outcome] || outcome);
@@ -67,12 +70,12 @@
         }
     }
 
-    // The area inside a run's <details> where the retry's outcome is shown
+    // The area in a run's details row where the retry's outcome is shown
     function resultPanel($details) {
         let $panel = $details.find('.adif-imp-retry-result').first();
         if (!$panel.length) {
             $panel = $('<div class="adif-imp-retry-result"></div>');
-            $details.append($panel);
+            $details.find('.adif-imp-run-detail > td').first().append($panel);
         }
         return $panel;
     }
@@ -152,7 +155,7 @@
         if (!confirm("Re-run this import? The fields it maps will be overwritten with the API's current values.")) {
             return;
         }
-        retryRun(runId, $button.closest('details'), $button);
+        retryRun(runId, $button.closest('.adif-imp-run'), $button);
     });
 
     // Dismissing: the run stops counting as needing attention (see ImportStatus::dismissImportRun).
@@ -160,7 +163,7 @@
     $(document).on('click', '.adif-imp-dismiss-btn', function () {
         const $button = $(this);
         const runId = $button.attr('data-run-id');
-        const $details = $button.closest('details');
+        const $details = $button.closest('.adif-imp-run');
         const reason = String($details.find('.adif-imp-dismiss-reason').val() || '').trim();
         if (!runId || $button.prop('disabled')) {
             return;
@@ -196,7 +199,7 @@
     $(document).on('click', '.adif-imp-undismiss', function () {
         const $button = $(this);
         const runId = $button.attr('data-run-id');
-        const $details = $button.closest('details');
+        const $details = $button.closest('.adif-imp-run');
         if (!runId || $button.prop('disabled')) {
             return;
         }
