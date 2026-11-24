@@ -4,8 +4,9 @@ Everything a project imports from, in one place (`pages/DataSources.php`, former
 page; `pages/Data_Tables.php` now redirects here). Two tabs:
 
 - **API connections** (`pages/data_sources/apis.php`): add, edit, test, reorder and delete API sources.
-- **Uploaded tables** (`pages/data_sources/tables.php`): the old Data Tables page, unchanged apart
-  from its wiring (see `classes/DataTables.php`).
+- **Uploaded tables** (`pages/data_sources/tables.php`): CSV and other delimited files, JSON files and
+  Excel workbooks used as sources (see `classes/DataTables.php`, `classes/DataTableFormats.php` and
+  "Uploaded tables" below).
 
 Each tab handles its own form posts. Every form posts `adif_tab`, so a save lands back on its tab.
 Only users with Project Design rights can change anything on either tab, the same rule as REDCap's module
@@ -56,6 +57,65 @@ until the page gets a proper field for it.
 
 Sends one request to the saved URL plus a path, with the saved key, and shows the status, timing,
 size and the start of the response. `[placeholders]` must be replaced with a real value first.
+
+## Uploaded tables
+
+Laid out like the API tab, so the two read the same way:
+
+- **Storage card** at the top: the same card as the API tab (`adif_ds_storage_card()` in
+  `pages/DataSources.php`), which both tabs call. Its line ends with the per-file limit, or what to do
+  when storage is full.
+- **Upload tables**, always shown (uploading is what the tab is for), its limits beside its title.
+  Several files can be chosen at once (`table_files[]`). **Each file becomes its own table** with its own
+  lookup column, settings and group of fields on the Mapping page; nothing is merged. The page lists the
+  files chosen, checks each one before anything is sent (not a CSV/TSV/TXT, JSON or .xlsx file, an old
+  .xls workbook, larger than the per-file limit) and the selection as a whole against PHP's `max_file_uploads` and `post_max_size`, which would
+  otherwise drop files or empty the whole post. A selection that can't work disables the button;
+  files that would push the project past its storage are flagged as "may not fit". The name field only
+  applies to a single file: with several, each table is named after its file (and a name already in
+  use is refused for that file alone).
+- **On the server** each file is added on its own, in the order chosen (`adif_dt_uploaded_files()`
+  normalises `$_FILES`; a form posting `table_file` still works), so one bad file, or storage running out
+  partway, doesn't stop the others. The result lists the tables added (linked, and marked **New** on
+  their cards) and each file that wasn't, with why. Every added table is written to the audit log.
+- **One collapsible card per table**, its header showing the name, rows × columns, the fields it offers,
+  how many REDCap fields are mapped to it (`DataTables::dataTableMappedFields()`; the tooltip names them),
+  the lookup column and the size. A card opens when it's the only table, the one an action was just taken
+  on, or the only one just added. Inside: the file, separator and uploader, the summary, settings,
+  preview, test, and replace or delete (the delete confirmation says how many mapped fields it affects).
+- With **several tables**, a line above them gives their count, total size and rows, with **Expand all**
+  and **Collapse all**.
+
+### File formats
+
+Every table is stored and read as delimited text, so lookups, previews, the Mapping page's fields and
+replacing a file work the same whatever was uploaded. JSON and Excel files are converted to CSV once,
+on upload (`DataTableFormats`), and the card says what the file was ("Excel workbook, sheet "Tracts",
+stored as CSV"). The table records it as `format` (`delimited`, `json` or `xlsx`; tables from before
+have none and are `delimited`) and, for a workbook, `sheet`.
+
+- **Delimited text** (.csv, .tsv, .tab, .txt): comma, tab, semicolon or pipe separated, found from the
+  header line. Anything that isn't UTF-8 is read as Windows-1252.
+- **JSON** (.json, .geojson, .jsonl, .ndjson): a list of objects, one per row; a list of lists whose first
+  names the columns (the Census API's form); an object holding such a list under a key (`{"data": [...]}`,
+  the longest list is read); a GeoJSON FeatureCollection (each feature's properties, plus its `id`; the
+  geometry is left out); or an object of objects keyed by id (the id becomes a `key` column). Nested
+  objects become dotted columns (`properties.svi`, mapped as `[0][properties.svi]`); nested lists are
+  kept as JSON text; `null` is blank and booleans are `true`/`false`.
+- **Excel workbooks** (.xlsx): read with PHP's zip and XML extensions, no library. **Each visible sheet
+  becomes its own table**, named "*name* - *sheet*" (just *name* when there's one sheet). A sheet's
+  first non-blank row names the columns, from its leftmost to its rightmost filled cell; blank rows are
+  skipped. Hidden sheets, and sheets that are empty or have one column, aren't read, and the upload says
+  which. Formulas give their saved result, error values (#N/A, #DIV/0!) are blank, dates are
+  `YYYY-MM-DD` (with ` HH:MM:SS` when there's a time, 1904 workbooks included), booleans `TRUE`/`FALSE`,
+  and numbers are written to 15 significant digits, whole numbers in full (so a GEOID stays
+  `21067000100`). Old .xls and password-protected workbooks are refused with a message to save as
+  .xlsx or CSV. When replacing a table's file with a workbook, the sheet with the table's sheet name is
+  read (or the only sheet).
+
+The per-file limit applies to what's uploaded and also to what's stored once converted, since a
+compressed workbook can be several times larger as CSV; a conversion stops as soon as it passes the
+limit. A workbook part over 25 times the limit, unzipped, isn't read at all.
 
 ## Storage and cached responses
 

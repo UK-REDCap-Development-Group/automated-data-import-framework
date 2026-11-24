@@ -365,3 +365,108 @@
 .adif-ds-orphan p {
     margin: 0;
 }
+
+/* The Uploaded tables tab (pages/data_sources/tables.php): tables are collapsible cards like the API
+   sources, with their name and a summary of what they hold in the header */
+.adif-ds-table-name {
+    flex: 1 1 240px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.adif-ds-table .adif-dt-meta {
+    margin-top: 12px;
+}
+
+/* Above the tables when there are several: how many, their size, and expand / collapse all */
+.adif-dt-list-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 16px;
+    margin: 20px 0 -6px;
+    font-size: 0.9em;
+    color: #556;
+}
+
+.adif-dt-list-head .btn-link {
+    padding: 0 4px;
+}
+
+/* The Upload tables card, always shown at the top of the tab: its title and limits, then the form */
+.adif-dt-upload-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px 12px;
+}
+
+.adif-dt-upload-head h4 {
+    margin: 0;
+}
+
+/* The upload form: the files chosen, each checked before anything is sent */
+.adif-dt-upload-form {
+    margin: 12px 0 0;
+}
+
+.adif-dt-chosen {
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid #e3e7ea;
+    border-radius: 4px;
+    background: #fff;
+}
+
+.adif-dt-chosen li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 12px;
+    padding: 6px 10px;
+    font-size: 0.88em;
+}
+
+.adif-dt-chosen li + li {
+    border-top: 1px solid #eef0f2;
+}
+
+.adif-dt-chosen-name {
+    flex: 1 1 220px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-weight: 600;
+}
+
+.adif-dt-chosen-size {
+    color: #667;
+    font-variant-numeric: tabular-nums;
+}
+
+.adif-dt-chosen-summary {
+    margin: 8px 0 0;
+    font-size: 0.88em;
+    color: #445;
+}
+
+.adif-dt-chosen-summary.is-error {
+    color: #a12f2b;
+    font-weight: 600;
+}
+
+.adif-dt-upload-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    margin-top: 12px;
+}
+
+/* An upload's result, one line per file */
+.adif-dt-results {
+    margin: 6px 0 0;
+    padding-left: 18px;
+}

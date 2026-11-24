@@ -412,10 +412,7 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
     <div class="adif-alert adif-alert-empty"><?= adif_h($notice) ?></div>
 <?php endforeach; ?>
 
-<section class="adif-dt-card adif-ds-storage" aria-labelledby="adif-ds-storage-title">
-    <h4 id="adif-ds-storage-title">Storage</h4>
-    <?= adif_ds_storage_bar($module->projectStorageUsage(), 'Each source\'s cached responses are listed in its panel'
-        . ($canManage ? ', where they can be cleared to free space' : '') . '.') ?>
+<?php ob_start(); ?>
     <?php if ($cacheUsageError !== null): ?>
         <div class="adif-alert adif-alert-error">The cache's storage couldn't be read: <?= adif_h($cacheUsageError) ?></div>
     <?php else: ?>
@@ -445,7 +442,9 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                 responses aren't used until a REDCap administrator turns it back on.</p>
         <?php endif; ?>
     <?php endif; ?>
-</section>
+<?php $storageExtra = ob_get_clean(); ?>
+<?= adif_ds_storage_card($module->projectStorageUsage(), 'Each source\'s cached responses are listed in its panel'
+    . ($canManage ? ', where they can be cleared to free space' : '') . '.', $storageExtra) ?>
 
 <?php if ($canManage): ?>
     <details class="adif-dt-card adif-ds-source adif-ds-new" id="adif-source-new" <?= empty($sources) || $focus === 'new' ? 'open' : '' ?>>
