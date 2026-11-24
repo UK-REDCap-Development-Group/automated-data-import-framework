@@ -115,6 +115,104 @@ trait DataTables
         return min($limits);
     }
 
+    // Why the largest upload is smaller than ADIF's per-file setting, when it is: a list of plain-text
+    // reasons, empty when the setting is what applies. PHP's upload_max_filesize and post_max_size cap
+    // it silently otherwise (see maxDataTableUploadBytes), and so does the project's storage limit,
+    // since no one file can be larger than the whole allowance.
+    public function dataTableUploadLimitReasons()
+    {
+        $setting = $this->dataTableFileLimitBytes();
+        $size = fn($b) => $this->formatDataTableBytes($b);
+        $reasons = [];
+
+        $capped = [];
+        foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+            $raw = trim((string) ini_get($name));
+            $bytes = $this->iniBytes($raw);
+            if ($bytes > 0 && $bytes < $setting) {
+                $capped[] = "$name = $raw";
+            }
+        }
+        if (!empty($capped)) {
+            $reasons[] = 'ADIF\'s setting allows files up to ' . $size($setting) . ', but this server\'s PHP accepts at most '
+                . $size($this->maxDataTableUploadBytes()) . ' (' . implode(', ', $capped) . '). A server administrator can '
+                . 'raise upload_max_filesize and post_max_size in php.ini (post_max_size a little above the other, since '
+                . 'it covers the whole upload), then restart PHP or the web server.';
+        }
+
+        $project = $this->dataTableProjectLimitBytes();
+        if ($project < $setting) {
+            $reasons[] = 'No file can be larger than the project\'s total storage limit of ' . $size($project)
+                . ', which is below the per-file setting (' . $size($setting) . '). A REDCap administrator can raise it '
+                . 'in the module\'s system settings.';
+        }
+        return $reasons;
+    }
+
+    // The Control Center configuration dialog's read-only panel on PHP's upload limits (the
+    // "adif-php-upload-limits" setting; see ADIF::redcap_module_configuration_settings). They can't be
+    // changed from REDCap, but they cap the data table settings under them, so they're shown with the
+    // php.ini files they come from and what they mean for uploads now.
+    public function phpUploadLimitsHtml()
+    {
+        $h = fn($text) => htmlspecialchars((string) $text, ENT_QUOTES);
+        $size = fn($b) => $this->formatDataTableBytes($b);
+        $row = function ($name, $what, $asBytes = true) use ($h, $size) {
+            $raw = trim((string) ini_get($name));
+            $bytes = $this->iniBytes($raw);
+            $shown = $raw === '' ? 'not set' : ($raw === '-1' || ($asBytes && $bytes <= 0) ? "$raw (no limit)"
+                : ($asBytes && $raw !== $size($bytes) ? "$raw (" . $size($bytes) . ')' : $raw));
+            return "<li><code>{$h($name)}</code>: <b>{$h($shown)}</b>, {$h($what)}</li>";
+        };
+
+        $html = '<b>Data tables: this server\'s PHP upload limits</b> (read-only: they\'re set in PHP\'s configuration, '
+            . 'not here, and the settings below can\'t go past them)'
+            . '<ul style="margin: 4px 0 4px 18px; padding: 0;">'
+            . $row('upload_max_filesize', 'the largest single file')
+            . $row('post_max_size', 'the largest upload in all, every file chosen at once')
+            . $row('max_file_uploads', 'how many files one upload can hold', false)
+            . $row('memory_limit', 'imports read a whole table into memory, so keep this well above the largest file')
+            . '</ul>';
+
+        $html .= 'A project can upload files up to <b>' . $h($size($this->maxDataTableUploadBytes())) . '</b> now: the '
+            . 'lowest of the per-file setting below (' . $h($size($this->dataTableFileLimitBytes())) . ' as last saved), '
+            . '<code>upload_max_filesize</code> and <code>post_max_size</code>.';
+        foreach ($this->dataTableUploadLimitReasons() as $reason) {
+            $html .= '<div class="text-danger" style="margin-top: 4px;">' . $h($reason) . '</div>';
+        }
+
+        // Which file sets each limit (the last one read wins), and where a new one would go
+        $loaded = php_ini_loaded_file();
+        $scanned = array_filter(array_map('trim', explode(',', (string) php_ini_scanned_files())));
+        $setBy = [];
+        foreach (array_merge($loaded ? [$loaded] : [], $scanned) as $file) {
+            $values = @parse_ini_file($file, false, INI_SCANNER_RAW);
+            foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+                if (is_array($values) && array_key_exists($name, $values)) {
+                    $setBy[$name] = [$file, trim((string) $values[$name])];
+                }
+            }
+        }
+        $sources = [];
+        foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+            if (!isset($setBy[$name])) {
+                $sources[] = "<code>$name</code> is set by no php.ini file, so it's PHP's built-in default";
+                continue;
+            }
+            [$file, $value] = $setBy[$name];
+            $sources[] = "<code>$name</code> is set in <code>" . $h($file) . '</code>'
+                // The web server or a PHP-FPM pool (php_admin_value) can override what the files say
+                . ($this->iniBytes($value) !== $this->iniBytes(ini_get($name)) ? ' (to ' . $h($value) . ', but something '
+                    . 'later overrides it: look in the web server\'s or PHP-FPM pool\'s configuration)' : '');
+        }
+        $scanDirectory = !empty($scanned) ? dirname(reset($scanned)) : '';
+        $html .= '<div style="margin-top: 4px; font-size: 90%;">' . implode('; ', $sources) . '. '
+            . ($scanDirectory !== '' ? 'To change them, edit that file or add one ending in <code>.ini</code> to <code>'
+                . $h($scanDirectory) . '</code>, then' : 'After changing them,')
+            . ' restart PHP (or the web server, or its Docker container).</div>';
+        return $html;
+    }
+
     // The per-file limit set by an administrator ("adif-table-max-file-mb"), else 8 MB
     public function dataTableFileLimitBytes()
     {

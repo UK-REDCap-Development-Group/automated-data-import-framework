@@ -141,6 +141,9 @@ $lookups = $module->getProjectSetting('lookup-fields') ?: [];
 $mappedByTable = $module->dataTableMappedFields();
 // Storage: each file is capped, and so is the total across the project's tables and cached API
 // responses (system settings; see adif_ds_storage_bar)
+// The limit in force: ADIF's per-file setting or PHP's upload limits, whichever is lower. Only the size
+// is shown here; why it's lower than the setting is explained to administrators in the module's
+// configuration dialog (DataTables::phpUploadLimitsHtml).
 $fileLimitBytes = $module->maxDataTableUploadBytes();
 $spaceLeftBytes = $module->dataTableSpaceLeftBytes();
 $uploadFull = $spaceLeftBytes === 0;
@@ -531,6 +534,7 @@ function adif_rows_table($columns, $rows, $highlight = null)
 
             var total = 0;
             var usable = 0;
+            var tooLarge = 0;
             var blocking = null;
             files.forEach(function (file) {
                 var extension = (file.name.split('.').pop() || '').toLowerCase();
@@ -538,6 +542,9 @@ function adif_rows_table($columns, $rows, $highlight = null)
                     : (extensions.indexOf(extension) === -1 ? 'Not a CSV, JSON or Excel (.xlsx) file'
                     : (maxFileBytes && file.size > maxFileBytes ? 'Larger than ' + size(maxFileBytes) : ''));
                 total += file.size;
+                if (maxFileBytes && file.size > maxFileBytes) {
+                    tooLarge++;
+                }
                 if (!problem) {
                     usable++;
                 }
@@ -556,11 +563,17 @@ function adif_rows_table($columns, $rows, $highlight = null)
                 list.appendChild(item);
             });
 
+            // A single file over the limit is told so; "together" is only for several files, whose total
+            // the server takes in one upload (a post over post_max_size arrives empty, so it's stopped here)
             if (files.length > maxFiles) {
                 blocking = 'The server takes up to ' + maxFiles + ' files at a time; choose ' + (files.length - maxFiles) + ' fewer.';
+            } else if (files.length === 1 && tooLarge === 1) {
+                blocking = 'This file is ' + size(total) + ', more than the ' + size(maxFileBytes) + ' a file can be.';
             } else if (maxPostBytes && total > maxPostBytes) {
-                blocking = 'Together they\'re ' + size(total) + ', more than the server takes in one upload (' + size(maxPostBytes)
-                    + '). Upload them in smaller groups.';
+                blocking = 'These ' + files.length + ' files are ' + size(total) + ' together, more than the server takes in one'
+                    + ' upload (' + size(maxPostBytes) + '). ' + (tooLarge > 0
+                        ? 'Remove the ' + (tooLarge === 1 ? 'one' : tooLarge) + ' marked too large, or upload the rest in smaller groups.'
+                        : 'Upload them in smaller groups.');
             } else if (files.length > 0 && usable === 0) {
                 blocking = files.length === 1 ? 'This file can\'t be uploaded.' : 'None of these files can be uploaded.';
             }

@@ -66,6 +66,14 @@ Laid out like the API tab, so the two read the same way:
   `pages/DataSources.php`), which both tabs call. Its line ends with the per-file limit, or what to do
   when storage is full.
 - **Upload tables**, always shown (uploading is what the tab is for), its limits beside its title.
+  The per-file size shown is the limit in force (the lower of ADIF's setting and PHP's upload limits),
+  with no explanation of where it comes from: users can't change it.
+  Administrators see why in the Control Center's configuration dialog: a read-only
+  panel above the data table settings (`adif-php-upload-limits`, a descriptive setting filled in by
+  `ADIF::redcap_module_configuration_settings`, REDCap 11+, from `DataTables::phpUploadLimitsHtml()`)
+  lists `upload_max_filesize`, `post_max_size`, `max_file_uploads` and `memory_limit`, the largest upload
+  a project gets now, in red why it's below ADIF's setting (`DataTables::dataTableUploadLimitReasons()`), and which php.ini file sets each upload limit (noting when
+  the web server or a PHP-FPM pool overrides it) and the folder a new .ini file would go in.
   Several files can be chosen at once (`table_files[]`). **Each file becomes its own table** with its own
   lookup column, settings and group of fields on the Mapping page; nothing is merged. The page lists the
   files chosen, checks each one before anything is sent (not a CSV/TSV/TXT, JSON or .xlsx file, an old

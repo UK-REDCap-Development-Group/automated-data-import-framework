@@ -36,8 +36,13 @@
             ]
         },
         {
+            "key": "adif-php-upload-limits",
+            "name": "<b>Data tables: this server's PHP upload limits</b> are shown here when the dialog opens (REDCap 11 or later). They're set in PHP's configuration (upload_max_filesize and post_max_size in php.ini), not here, and the settings below can't go past them.",
+            "type": "descriptive"
+        },
+        {
             "key": "adif-table-max-file-mb",
-            "name": "<b>Data tables:</b> largest file a project can upload, in MB. Leave blank for the default of 8 MB. The server's PHP upload limits still apply when they're lower.",
+            "name": "Largest file a project can upload, in MB. Leave blank for the default of 8 MB. PHP's upload limits (above) still apply when they're lower, and no file can be larger than a project's total storage (next setting).",
             "type": "text",
             "validation": "number"
         },
