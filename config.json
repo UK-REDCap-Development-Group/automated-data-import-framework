@@ -12,13 +12,18 @@
     ],
     "system-settings": [
         {
+            "key": "adif-section-caching",
+            "type": "descriptive",
+            "name": "<span style=\"display: block; font-size: 1.15em; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 3px; margin-top: 10px;\">API caching</span><span style=\"display: block; color: #555; margin-top: 4px;\">Saves API responses so a repeated request doesn't go to the API again. Each project chooses which of its API sources to cache; these settings cover the whole server.</span>"
+        },
+        {
             "key": "adif-cache-enabled",
-            "name": "<b>API caching:</b> enable caching of API responses. Projects then choose which of their API sources to cache. When unchecked, nothing is cached on this server: every request goes to the API, whatever projects have chosen.",
+            "name": "Allow caching on this server (unchecked: nothing is cached, whatever projects choose)",
             "type": "checkbox"
         },
         {
             "key": "adif-cache-max-scope",
-            "name": "Widest sharing allowed for cached API responses",
+            "name": "Widest sharing of cached responses",
             "type": "dropdown",
             "choices": [
                 {
@@ -33,28 +38,263 @@
                     "value": "record",
                     "name": "Within a record only"
                 }
-            ]
+            ],
+            "branchingLogic": {
+                "field": "adif-cache-enabled",
+                "value": true
+            }
+        },
+        {
+            "key": "adif-section-tables",
+            "type": "descriptive",
+            "name": "<span style=\"display: block; font-size: 1.15em; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 3px; margin-top: 10px;\">Uploaded data tables</span><span style=\"display: block; color: #555; margin-top: 4px;\">Files projects upload on their Data Sources page and use like an API. A project's storage holds its uploaded tables and its cached API responses together: when it's full, new uploads are refused but caching carries on, and lowering the limit removes nothing already stored.</span>"
         },
         {
             "key": "adif-php-upload-limits",
-            "name": "<b>Data tables: this server's PHP upload limits</b> are shown here when the dialog opens (REDCap 11 or later). They're set in PHP's configuration (upload_max_filesize and post_max_size in php.ini), not here, and the settings below can't go past them.",
+            "name": "<span style=\"display: block; color: #555;\">This server's PHP upload limits (upload_max_filesize and post_max_size) also cap the sizes below. Their values are shown here in REDCap 11 or later.</span>",
             "type": "descriptive"
         },
         {
             "key": "adif-table-max-file-mb",
-            "name": "Largest file a project can upload, in MB. Leave blank for the default of 8 MB. PHP's upload limits (above) still apply when they're lower, and no file can be larger than a project's total storage (next setting).",
+            "name": "Largest file per upload, in MB (blank: 8)",
             "type": "text",
-            "validation": "number"
+            "validation": "number",
+            "validation_min": "1"
         },
         {
             "key": "adif-table-max-project-mb",
-            "name": "Most storage one project can use in total, in MB: its uploaded data tables and its cached API responses together. Leave blank for the default of 32 MB. Reaching it only blocks new uploads (caching carries on); lowering it doesn't remove anything already stored.",
+            "name": "Storage per project, in MB (blank: 32)",
             "type": "text",
-            "validation": "number"
+            "validation": "number",
+            "validation_min": "1"
+        },
+        {
+            "key": "adif-section-imports",
+            "type": "descriptive",
+            "name": "<span style=\"display: block; font-size: 1.15em; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 3px; margin-top: 10px;\">Background imports</span><span style=\"display: block; color: #555; margin-top: 4px;\">Imports ADIF runs on its own: survey and data entry imports from the queue, Refresh all records, and Retry all failed. Imports started on the Import Status page, or run while a respondent waits, aren't limited. Each import sends one request per API endpoint its mappings read from. Refresh all records waits for off-peak hours; choose the same hour for both to let it run at any time.</span>"
+        },
+        {
+            "key": "adif-imports-per-minute",
+            "name": "Most background imports per minute, server-wide (blank: 20)",
+            "type": "text",
+            "validation": "integer",
+            "validation_min": "1",
+            "validation_max": "300"
+        },
+        {
+            "key": "adif-refresh-start-hour",
+            "name": "Off-peak hours start (server time)",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "00:00"
+                },
+                {
+                    "value": "1",
+                    "name": "01:00"
+                },
+                {
+                    "value": "2",
+                    "name": "02:00"
+                },
+                {
+                    "value": "3",
+                    "name": "03:00"
+                },
+                {
+                    "value": "4",
+                    "name": "04:00"
+                },
+                {
+                    "value": "5",
+                    "name": "05:00"
+                },
+                {
+                    "value": "6",
+                    "name": "06:00"
+                },
+                {
+                    "value": "7",
+                    "name": "07:00"
+                },
+                {
+                    "value": "8",
+                    "name": "08:00"
+                },
+                {
+                    "value": "9",
+                    "name": "09:00"
+                },
+                {
+                    "value": "10",
+                    "name": "10:00"
+                },
+                {
+                    "value": "11",
+                    "name": "11:00"
+                },
+                {
+                    "value": "12",
+                    "name": "12:00"
+                },
+                {
+                    "value": "13",
+                    "name": "13:00"
+                },
+                {
+                    "value": "14",
+                    "name": "14:00"
+                },
+                {
+                    "value": "15",
+                    "name": "15:00"
+                },
+                {
+                    "value": "16",
+                    "name": "16:00"
+                },
+                {
+                    "value": "17",
+                    "name": "17:00"
+                },
+                {
+                    "value": "18",
+                    "name": "18:00"
+                },
+                {
+                    "value": "19",
+                    "name": "19:00"
+                },
+                {
+                    "value": "20",
+                    "name": "20:00"
+                },
+                {
+                    "value": "21",
+                    "name": "21:00"
+                },
+                {
+                    "value": "22",
+                    "name": "22:00 (default)"
+                },
+                {
+                    "value": "23",
+                    "name": "23:00"
+                }
+            ]
+        },
+        {
+            "key": "adif-refresh-end-hour",
+            "name": "Off-peak hours end",
+            "type": "dropdown",
+            "choices": [
+                {
+                    "value": "0",
+                    "name": "00:00"
+                },
+                {
+                    "value": "1",
+                    "name": "01:00"
+                },
+                {
+                    "value": "2",
+                    "name": "02:00"
+                },
+                {
+                    "value": "3",
+                    "name": "03:00"
+                },
+                {
+                    "value": "4",
+                    "name": "04:00"
+                },
+                {
+                    "value": "5",
+                    "name": "05:00"
+                },
+                {
+                    "value": "6",
+                    "name": "06:00 (default)"
+                },
+                {
+                    "value": "7",
+                    "name": "07:00"
+                },
+                {
+                    "value": "8",
+                    "name": "08:00"
+                },
+                {
+                    "value": "9",
+                    "name": "09:00"
+                },
+                {
+                    "value": "10",
+                    "name": "10:00"
+                },
+                {
+                    "value": "11",
+                    "name": "11:00"
+                },
+                {
+                    "value": "12",
+                    "name": "12:00"
+                },
+                {
+                    "value": "13",
+                    "name": "13:00"
+                },
+                {
+                    "value": "14",
+                    "name": "14:00"
+                },
+                {
+                    "value": "15",
+                    "name": "15:00"
+                },
+                {
+                    "value": "16",
+                    "name": "16:00"
+                },
+                {
+                    "value": "17",
+                    "name": "17:00"
+                },
+                {
+                    "value": "18",
+                    "name": "18:00"
+                },
+                {
+                    "value": "19",
+                    "name": "19:00"
+                },
+                {
+                    "value": "20",
+                    "name": "20:00"
+                },
+                {
+                    "value": "21",
+                    "name": "21:00"
+                },
+                {
+                    "value": "22",
+                    "name": "22:00"
+                },
+                {
+                    "value": "23",
+                    "name": "23:00"
+                }
+            ]
+        },
+        {
+            "key": "adif-section-cleanup",
+            "type": "descriptive",
+            "name": "<span style=\"display: block; font-size: 1.15em; font-weight: bold; border-bottom: 1px solid #ccc; padding-bottom: 3px; margin-top: 10px;\">Cleanup after projects are deleted</span><span style=\"display: block; color: #555; margin-top: 4px;\">Removes what ADIF kept for a deleted project: its cached API responses as soon as it's deleted, and its uploaded tables, ADIF settings and ADIF log entries once REDCap deletes it permanently. It starts within the chosen hour (server time), when REDCap's cron next runs.</span>"
         },
         {
             "key": "adif-cleanup-frequency",
-            "name": "<b>Deleted projects:</b> how often ADIF removes what it kept for deleted projects: their cached API responses once a project is deleted, and their uploaded tables, ADIF settings and ADIF log entries once REDCap deletes it permanently. Leave blank for the default, weekly.",
+            "name": "How often",
             "type": "dropdown",
             "choices": [
                 {
@@ -73,7 +313,7 @@
         },
         {
             "key": "adif-cleanup-weekday",
-            "name": "Day it runs on, when weekly. Leave blank for the default, Thursday.",
+            "name": "Day of the week",
             "type": "dropdown",
             "choices": [
                 {
@@ -104,11 +344,24 @@
                     "value": "6",
                     "name": "Saturday"
                 }
-            ]
+            ],
+            "branchingLogic": {
+                "type": "or",
+                "conditions": [
+                    {
+                        "field": "adif-cleanup-frequency",
+                        "value": ""
+                    },
+                    {
+                        "field": "adif-cleanup-frequency",
+                        "value": "weekly"
+                    }
+                ]
+            }
         },
         {
             "key": "adif-cleanup-hour",
-            "name": "Hour it runs at, in the server's time zone. It starts within the hour, when REDCap's cron next runs ADIF's cleanup check. Leave blank for the default, 2 AM.",
+            "name": "Hour",
             "type": "dropdown",
             "choices": [
                 {
@@ -207,219 +460,12 @@
                     "value": "23",
                     "name": "11 PM"
                 }
-            ]
-        },
-        {
-            "key": "adif-imports-per-minute",
-            "name": "<b>Background imports:</b> the most imports ADIF starts per minute across the whole server, spaced evenly through the minute. One limit shared by everything ADIF runs in the background: survey imports queued for the cron, Refresh all records and Retry all failed. Single retries and imports clicked on the Import Status page, and imports run while a respondent waits, aren't counted. Leave blank for 20 (at most 300). Each import makes one request per API endpoint its record's mappings read from.",
-            "type": "text",
-            "validation": "integer"
-        },
-        {
-            "key": "adif-refresh-start-hour",
-            "name": "<b>Bulk refresh:</b> a refresh of every record's imports, requested on a project's Import Status page, runs only during off-peak hours. They start at (server time; leave blank for 22:00)",
-            "type": "dropdown",
-            "choices": [
-                {
-                    "value": "0",
-                    "name": "00:00"
-                },
-                {
-                    "value": "1",
-                    "name": "01:00"
-                },
-                {
-                    "value": "2",
-                    "name": "02:00"
-                },
-                {
-                    "value": "3",
-                    "name": "03:00"
-                },
-                {
-                    "value": "4",
-                    "name": "04:00"
-                },
-                {
-                    "value": "5",
-                    "name": "05:00"
-                },
-                {
-                    "value": "6",
-                    "name": "06:00"
-                },
-                {
-                    "value": "7",
-                    "name": "07:00"
-                },
-                {
-                    "value": "8",
-                    "name": "08:00"
-                },
-                {
-                    "value": "9",
-                    "name": "09:00"
-                },
-                {
-                    "value": "10",
-                    "name": "10:00"
-                },
-                {
-                    "value": "11",
-                    "name": "11:00"
-                },
-                {
-                    "value": "12",
-                    "name": "12:00"
-                },
-                {
-                    "value": "13",
-                    "name": "13:00"
-                },
-                {
-                    "value": "14",
-                    "name": "14:00"
-                },
-                {
-                    "value": "15",
-                    "name": "15:00"
-                },
-                {
-                    "value": "16",
-                    "name": "16:00"
-                },
-                {
-                    "value": "17",
-                    "name": "17:00"
-                },
-                {
-                    "value": "18",
-                    "name": "18:00"
-                },
-                {
-                    "value": "19",
-                    "name": "19:00"
-                },
-                {
-                    "value": "20",
-                    "name": "20:00"
-                },
-                {
-                    "value": "21",
-                    "name": "21:00"
-                },
-                {
-                    "value": "22",
-                    "name": "22:00"
-                },
-                {
-                    "value": "23",
-                    "name": "23:00"
-                }
-            ]
-        },
-        {
-            "key": "adif-refresh-end-hour",
-            "name": "Off-peak hours end at (server time; leave blank for 06:00). Choose the same hour as the start to let refreshes run at any time.",
-            "type": "dropdown",
-            "choices": [
-                {
-                    "value": "0",
-                    "name": "00:00"
-                },
-                {
-                    "value": "1",
-                    "name": "01:00"
-                },
-                {
-                    "value": "2",
-                    "name": "02:00"
-                },
-                {
-                    "value": "3",
-                    "name": "03:00"
-                },
-                {
-                    "value": "4",
-                    "name": "04:00"
-                },
-                {
-                    "value": "5",
-                    "name": "05:00"
-                },
-                {
-                    "value": "6",
-                    "name": "06:00"
-                },
-                {
-                    "value": "7",
-                    "name": "07:00"
-                },
-                {
-                    "value": "8",
-                    "name": "08:00"
-                },
-                {
-                    "value": "9",
-                    "name": "09:00"
-                },
-                {
-                    "value": "10",
-                    "name": "10:00"
-                },
-                {
-                    "value": "11",
-                    "name": "11:00"
-                },
-                {
-                    "value": "12",
-                    "name": "12:00"
-                },
-                {
-                    "value": "13",
-                    "name": "13:00"
-                },
-                {
-                    "value": "14",
-                    "name": "14:00"
-                },
-                {
-                    "value": "15",
-                    "name": "15:00"
-                },
-                {
-                    "value": "16",
-                    "name": "16:00"
-                },
-                {
-                    "value": "17",
-                    "name": "17:00"
-                },
-                {
-                    "value": "18",
-                    "name": "18:00"
-                },
-                {
-                    "value": "19",
-                    "name": "19:00"
-                },
-                {
-                    "value": "20",
-                    "name": "20:00"
-                },
-                {
-                    "value": "21",
-                    "name": "21:00"
-                },
-                {
-                    "value": "22",
-                    "name": "22:00"
-                },
-                {
-                    "value": "23",
-                    "name": "23:00"
-                }
-            ]
+            ],
+            "branchingLogic": {
+                "field": "adif-cleanup-frequency",
+                "op": "<>",
+                "value": "off"
+            }
         }
     ],
     "auth-ajax-actions": [

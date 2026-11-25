@@ -162,23 +162,26 @@ trait DataTables
             $bytes = $this->iniBytes($raw);
             $shown = $raw === '' ? 'not set' : ($raw === '-1' || ($asBytes && $bytes <= 0) ? "$raw (no limit)"
                 : ($asBytes && $raw !== $size($bytes) ? "$raw (" . $size($bytes) . ')' : $raw));
-            return "<li><code>{$h($name)}</code>: <b>{$h($shown)}</b>, {$h($what)}</li>";
+            return '<tr><td style="padding: 1px 14px 1px 0;"><code>' . $h($name) . '</code></td>'
+                . '<td style="padding: 1px 14px 1px 0;"><b>' . $h($shown) . '</b></td>'
+                . '<td style="padding: 1px 0; color: #555;">' . $h($what) . '</td></tr>';
         };
 
-        $html = '<b>Data tables: this server\'s PHP upload limits</b> (read-only: they\'re set in PHP\'s configuration, '
-            . 'not here, and the settings below can\'t go past them)'
-            . '<ul style="margin: 4px 0 4px 18px; padding: 0;">'
-            . $row('upload_max_filesize', 'the largest single file')
-            . $row('post_max_size', 'the largest upload in all, every file chosen at once')
-            . $row('max_file_uploads', 'how many files one upload can hold', false)
-            . $row('memory_limit', 'imports read a whole table into memory, so keep this well above the largest file')
-            . '</ul>';
+        // Shown in the dialog's label, so block elements are spans set to display: block
+        $html = '<span style="display: block; background: #f7f7f7; border: 1px solid #e2e2e2; border-radius: 4px; '
+            . 'padding: 6px 10px; margin-top: 4px;">'
+            . '<b>PHP upload limits on this server</b> <span style="color: #555;">(set in PHP\'s configuration, not '
+            . 'here; the sizes below can\'t go past them)</span>'
+            . '<table style="margin: 4px 0; font-size: 95%;">'
+            . $row('upload_max_filesize', 'largest single file')
+            . $row('post_max_size', 'largest upload, all files together')
+            . $row('max_file_uploads', 'files per upload', false)
+            . $row('memory_limit', 'keep well above the largest table: imports read a whole table into memory')
+            . '</table>';
 
-        $html .= 'A project can upload files up to <b>' . $h($size($this->maxDataTableUploadBytes())) . '</b> now: the '
-            . 'lowest of the per-file setting below (' . $h($size($this->dataTableFileLimitBytes())) . ' as last saved), '
-            . '<code>upload_max_filesize</code> and <code>post_max_size</code>.';
+        $html .= 'Projects can upload files up to <b>' . $h($size($this->maxDataTableUploadBytes())) . '</b> now.';
         foreach ($this->dataTableUploadLimitReasons() as $reason) {
-            $html .= '<div class="text-danger" style="margin-top: 4px;">' . $h($reason) . '</div>';
+            $html .= '<span class="text-danger" style="display: block; margin-top: 4px;">' . $h($reason) . '</span>';
         }
 
         // Which file sets each limit (the last one read wins), and where a new one would go
@@ -206,10 +209,10 @@ trait DataTables
                     . 'later overrides it: look in the web server\'s or PHP-FPM pool\'s configuration)' : '');
         }
         $scanDirectory = !empty($scanned) ? dirname(reset($scanned)) : '';
-        $html .= '<div style="margin-top: 4px; font-size: 90%;">' . implode('; ', $sources) . '. '
+        $html .= '<span style="display: block; margin-top: 4px; font-size: 90%; color: #555;">' . implode('; ', $sources) . '. '
             . ($scanDirectory !== '' ? 'To change them, edit that file or add one ending in <code>.ini</code> to <code>'
                 . $h($scanDirectory) . '</code>, then' : 'After changing them,')
-            . ' restart PHP (or the web server, or its Docker container).</div>';
+            . ' restart PHP (or the web server, or its Docker container).</span></span>';
         return $html;
     }
 

@@ -529,6 +529,7 @@ $projectTitle = \REDCap::getProjectTitle();
             return;
         }
         closeApiFieldPicker(false);
+        closeLookupFieldPicker(false);
 
         p.select = select;
         p.trigger = trigger;
@@ -783,21 +784,27 @@ $projectTitle = \REDCap::getProjectTitle();
     function positionPicker() {
         const p = picker;
         if (!p || !p.trigger) return;
+        positionPopover(p.el, p.trigger, 'right');
+    }
 
+    // A picker popover under its trigger (above when there isn't room below), at least 520px wide,
+    // its left or right edge lined up with the trigger's and kept inside the window. Shared by the
+    // API field picker and the lookup prompt's REDCap field picker.
+    function positionPopover(el, trigger, align) {
         const margin = 8;
-        const rect = p.trigger.getBoundingClientRect();
+        const rect = trigger.getBoundingClientRect();
         const width = Math.min(Math.max(rect.width, 520), window.innerWidth - margin * 2);
-        let left = Math.min(rect.right - width, window.innerWidth - margin - width);
-        left = Math.max(margin, left);
+        let left = align === 'left' ? rect.left : rect.right - width;
+        left = Math.max(margin, Math.min(left, window.innerWidth - margin - width));
 
         const below = window.innerHeight - rect.bottom - margin;
         const above = rect.top - margin;
         const openUp = below < 280 && above > below;
-        p.el.style.width = `${width}px`;
-        p.el.style.left = `${left + window.scrollX}px`;
-        p.el.style.maxHeight = `${Math.max(220, Math.min(480, (openUp ? above : below) - 6))}px`;
-        p.el.style.top = openUp
-            ? `${rect.top + window.scrollY - 6 - p.el.offsetHeight}px`
+        el.style.width = `${width}px`;
+        el.style.left = `${left + window.scrollX}px`;
+        el.style.maxHeight = `${Math.max(220, Math.min(480, (openUp ? above : below) - 6))}px`;
+        el.style.top = openUp
+            ? `${rect.top + window.scrollY - 6 - el.offsetHeight}px`
             : `${rect.bottom + window.scrollY + 6}px`;
     }
 
@@ -1563,25 +1570,26 @@ $projectTitle = \REDCap::getProjectTitle();
         return fieldExists(field) ? field : '';
     }
 
-    // The field most likely to hold a placeholder's value: the same name, then a name containing it
-    // or contained in it (address -> home_address, census_tract_geoid -> tract_geoid), then the
-    // most shared words. '' when nothing is close.
-    function suggestLookupField(placeholder) {
+    // Fields likely to hold a placeholder's value, best first: the same name, then a name containing
+    // it or contained in it (address -> home_address, census_tract_geoid -> tract_geoid), then the
+    // most shared words. Fields sharing nothing are left out; ties keep the project's field order.
+    function rankLookupFields(placeholder) {
         const words = placeholder.split('_');
-        let best = '';
-        let bestScore = 0;
+        const ranked = [];
         lookupFieldOptions().forEach(group => group.fields.forEach(({name}) => {
             let score;
             if (name === placeholder) score = 100;
             else if (name.includes(placeholder)) score = 80;
             else if (placeholder.includes(name)) score = 70;
             else score = 10 * name.split('_').filter(word => word.length > 2 && words.includes(word)).length;
-            if (score > bestScore) {
-                best = name;
-                bestScore = score;
-            }
+            if (score > 0) ranked.push({name, score});
         }));
-        return best;
+        return ranked.sort((a, b) => b.score - a.score).map(entry => entry.name);
+    }
+
+    // The field most likely to hold a placeholder's value, or '' when nothing is close
+    function suggestLookupField(placeholder) {
+        return rankLookupFields(placeholder)[0] || '';
     }
 
     // The selected API field's source, endpoint and placeholders, or null when it has none
@@ -1657,6 +1665,7 @@ $projectTitle = \REDCap::getProjectTitle();
     }
 
     function closeLookupPrompts() {
+        closeLookupFieldPicker(false);
         document.querySelectorAll('#instruments_list .lookup-prompt-row').forEach(row => row.remove());
     }
 
@@ -1721,8 +1730,11 @@ $projectTitle = \REDCap::getProjectTitle();
                 picker.appendChild(optgroup);
             });
             picker.value = current || suggested;
+            picker.dataset.current = current;
+            picker.dataset.suggested = suggested;
 
             label.appendChild(picker);
+            attachLookupFieldPicker(picker);
             choices.appendChild(label);
             return picker;
         });
@@ -1754,8 +1766,399 @@ $projectTitle = \REDCap::getProjectTitle();
             refreshAllLookupStatuses();
         });
         later.addEventListener('click', closeLookupPrompts);
-        pickers[0].focus();
+        choices.querySelector('.adif-picker-trigger').focus();
     }
+
+    // ---- REDCap field picker ----
+    // The lookup prompt's REDCap field is chosen the way an API field is: a button opening a
+    // searchable popover, with the fields grouped under their instrument, a filter chip for each
+    // instrument, and the likeliest fields for the placeholder first. Each placeholder keeps its
+    // hidden <select> as the record of the choice, which "Use this field" reads.
+
+    const FORM_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false"><rect x="5" y="3" width="14" height="18" rx="2"></rect><path d="M9 8h6M9 12h6M9 16h4"></path></svg>';
+
+    // Every field that can hold a lookup value, with what search needs, worked out on first use
+    let lookupPickerItems = null;
+    function lookupPickerFields() {
+        if (!lookupPickerItems) {
+            lookupPickerItems = [];
+            lookupFieldOptions().forEach(group => group.fields.forEach(field => lookupPickerItems.push({
+                name: field.name,
+                label: field.label,
+                form: group.label,
+                haystack: `${field.name} ${field.label} ${group.label}`.toLowerCase(),
+            })));
+        }
+        return lookupPickerItems;
+    }
+
+    function lookupFormBadge(item) {
+        const badge = document.createElement('span');
+        badge.className = 'adif-picker-badge';
+        badge.title = item.form;
+        badge.insertAdjacentHTML('beforeend', FORM_ICON);
+        const text = document.createElement('span');
+        text.className = 'adif-picker-badge-text';
+        text.textContent = item.form;
+        badge.appendChild(text);
+        return badge;
+    }
+
+    // The button standing in for a placeholder's select: the field's instrument and name, and
+    // whether it's only a suggestion
+    function renderLookupTrigger(trigger, select) {
+        trigger.textContent = '';
+        const placeholder = select.dataset.placeholder;
+        const item = lookupPickerFields().find(f => f.name === select.value);
+
+        if (!item) {
+            trigger.classList.add('is-empty');
+            trigger.insertAdjacentHTML('beforeend', PICKER_ICONS.search);
+            const text = document.createElement('span');
+            text.className = 'adif-picker-value';
+            text.textContent = 'Search REDCap fields…';
+            trigger.appendChild(text);
+            trigger.title = '';
+            trigger.setAttribute('aria-label', `REDCap field for [${placeholder}]: none chosen`);
+            return;
+        }
+
+        trigger.classList.remove('is-empty');
+        trigger.appendChild(lookupFormBadge(item));
+        const value = document.createElement('span');
+        value.className = 'adif-picker-value';
+        value.textContent = item.name;
+        trigger.appendChild(value);
+        if (item.name === select.dataset.suggested && item.name !== select.dataset.current) {
+            const tag = document.createElement('span');
+            tag.className = 'adif-picker-current adif-picker-suggested';
+            tag.textContent = 'Suggested';
+            trigger.appendChild(tag);
+        }
+        trigger.insertAdjacentHTML('beforeend', PICKER_ICONS.chevron);
+        trigger.title = item.label ? `${item.name}: ${item.label}` : item.name;
+        trigger.setAttribute('aria-label', `REDCap field for [${placeholder}]: ${item.name}`);
+    }
+
+    // Puts the trigger first in the select's <label>, so clicking the label's text opens it too
+    function attachLookupFieldPicker(select) {
+        select.hidden = true;
+        const trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.className = 'adif-picker-trigger';
+        trigger.setAttribute('aria-haspopup', 'listbox');
+        trigger.setAttribute('aria-expanded', 'false');
+        select.before(trigger);
+        renderLookupTrigger(trigger, select);
+
+        trigger.addEventListener('click', () => openLookupFieldPicker(select, trigger));
+        trigger.addEventListener('keydown', event => {
+            // Arrow down opens it; typing a letter opens it already searching for that letter
+            const typed = event.key.length === 1 && event.key !== ' '
+                && !event.ctrlKey && !event.metaKey && !event.altKey;
+            if (event.key === 'ArrowDown' || typed) {
+                event.preventDefault();
+                openLookupFieldPicker(select, trigger, typed ? event.key : '');
+            }
+        });
+        return trigger;
+    }
+
+    let fieldPicker = null;
+
+    function buildLookupFieldPicker() {
+        if (fieldPicker) return fieldPicker;
+
+        const el = document.createElement('div');
+        el.className = 'adif-picker';
+        el.setAttribute('role', 'dialog');
+        el.setAttribute('aria-label', 'Choose a REDCap field');
+        el.hidden = true;
+
+        const search = document.createElement('label');
+        search.className = 'adif-picker-search';
+        search.insertAdjacentHTML('beforeend', PICKER_ICONS.search);
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.autocomplete = 'off';
+        input.spellcheck = false;
+        input.placeholder = `Search ${lookupPickerFields().length.toLocaleString()} REDCap fields`;
+        input.setAttribute('role', 'combobox');
+        input.setAttribute('aria-autocomplete', 'list');
+        input.setAttribute('aria-expanded', 'true');
+        input.setAttribute('aria-controls', 'adif-field-picker-list');
+        search.appendChild(input);
+
+        const chips = document.createElement('div');
+        chips.className = 'adif-picker-chips';
+        chips.setAttribute('role', 'group');
+        chips.setAttribute('aria-label', 'Filter by instrument');
+
+        const list = document.createElement('div');
+        list.className = 'adif-picker-list';
+        list.id = 'adif-field-picker-list';
+        list.setAttribute('role', 'listbox');
+        list.setAttribute('aria-label', 'REDCap fields');
+
+        const footer = document.createElement('div');
+        footer.className = 'adif-picker-footer';
+        const keys = document.createElement('span');
+        keys.textContent = '↑ ↓ to move · Enter to choose · Esc to close';
+        const count = document.createElement('span');
+        footer.append(keys, count);
+
+        el.append(search, chips, list, footer);
+        document.body.appendChild(el);
+
+        fieldPicker = {el, input, chips, list, count, select: null, trigger: null,
+            form: null, suggestions: [], items: [], active: -1};
+
+        input.addEventListener('input', () => renderLookupFieldPicker(false));
+        input.addEventListener('keydown', event => {
+            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                if (!fieldPicker.items.length) return;
+                const step = event.key === 'ArrowDown' ? 1 : -1;
+                const next = Math.min(fieldPicker.items.length - 1, Math.max(0, fieldPicker.active + step));
+                setLookupFieldPickerActive(next, true);
+            } else if (event.key === 'Enter') {
+                event.preventDefault();
+                chooseLookupFieldPickerItem(fieldPicker.active);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                closeLookupFieldPicker(true);
+            } else if (event.key === 'Tab') {
+                closeLookupFieldPicker(false);
+            }
+        });
+
+        return fieldPicker;
+    }
+
+    function openLookupFieldPicker(select, trigger, initialQuery = '') {
+        const p = buildLookupFieldPicker();
+        if (p.trigger === trigger) {
+            closeLookupFieldPicker(true);
+            return;
+        }
+        closeLookupFieldPicker(false);
+        closeApiFieldPicker(false);
+
+        const placeholder = select.dataset.placeholder;
+        const byName = new Map(lookupPickerFields().map(f => [f.name, f]));
+        p.select = select;
+        p.trigger = trigger;
+        p.form = null;
+        p.suggestions = rankLookupFields(placeholder).slice(0, 3).map(name => byName.get(name)).filter(Boolean);
+        p.input.value = initialQuery;
+        p.input.setAttribute('aria-label', `Search REDCap fields for [${placeholder}]`);
+        trigger.setAttribute('aria-expanded', 'true');
+        trigger.classList.add('is-open');
+        p.el.hidden = false;
+
+        renderLookupFieldPicker(true);
+        positionPopover(p.el, trigger, 'left');
+        p.input.focus();
+    }
+
+    function closeLookupFieldPicker(returnFocus) {
+        const p = fieldPicker;
+        if (!p || !p.trigger) return;
+
+        p.el.hidden = true;
+        p.trigger.setAttribute('aria-expanded', 'false');
+        p.trigger.classList.remove('is-open');
+        if (returnFocus && p.trigger.isConnected) p.trigger.focus();
+        p.trigger = null;
+        p.select = null;
+    }
+
+    function renderLookupFieldPicker(onOpen) {
+        const p = fieldPicker;
+        const all = lookupPickerFields();
+        const tokens = p.input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+        const matching = tokens.length ? all.filter(f => tokens.every(token => f.haystack.includes(token))) : all;
+        const forms = [...new Set(all.map(f => f.form))];
+
+        // Instrument chips, with how many fields in each match the search. Not worth showing for one.
+        p.chips.textContent = '';
+        p.chips.hidden = forms.length < 2;
+        if (!p.chips.hidden) {
+            const counts = new Map();
+            matching.forEach(f => counts.set(f.form, (counts.get(f.form) || 0) + 1));
+            const chip = (label, form, count) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'adif-picker-chip';
+                button.textContent = `${label} · ${count.toLocaleString()}`;
+                button.title = label;
+                button.setAttribute('aria-pressed', p.form === form ? 'true' : 'false');
+                if (count === 0 && p.form !== form) button.classList.add('is-empty');
+                // Keep focus in the search box while clicking
+                button.addEventListener('mousedown', event => event.preventDefault());
+                button.addEventListener('click', () => {
+                    p.form = p.form === form ? null : form;
+                    renderLookupFieldPicker(false);
+                });
+                p.chips.appendChild(button);
+            };
+            chip('All instruments', null, matching.length);
+            forms.forEach(form => chip(form, form, counts.get(form) || 0));
+        }
+
+        const shown = p.form ? matching.filter(f => f.form === p.form) : matching;
+        const shownSet = new Set(shown);
+        const current = p.select.dataset.current || '';
+
+        p.list.textContent = '';
+        p.items = [];
+
+        const group = (label, count) => {
+            const wrapper = document.createElement('div');
+            wrapper.setAttribute('role', 'group');
+            const heading = document.createElement('div');
+            heading.className = 'adif-picker-group-label';
+            heading.id = `adif-field-picker-group-${p.list.children.length}`;
+            heading.textContent = count === undefined ? label : `${label} · ${count.toLocaleString()}`;
+            wrapper.setAttribute('aria-labelledby', heading.id);
+            wrapper.appendChild(heading);
+            p.list.appendChild(wrapper);
+            return wrapper;
+        };
+
+        const addOption = (item, parent, withBadge) => {
+            const index = p.items.length;
+            const option = document.createElement('div');
+            option.id = `adif-field-picker-option-${index}`;
+            option.className = 'adif-picker-option';
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', item.name === p.select.value ? 'true' : 'false');
+            option.title = item.label ? `${item.name}: ${item.label}` : item.name;
+
+            const main = document.createElement('span');
+            main.className = 'adif-picker-option-main';
+            if (withBadge) main.appendChild(lookupFormBadge(item));
+            const name = document.createElement('span');
+            name.className = 'adif-picker-option-display';
+            appendHighlighted(name, item.name, tokens);
+            main.appendChild(name);
+            if (item.name === current) {
+                const tag = document.createElement('span');
+                tag.className = 'adif-picker-current';
+                tag.textContent = 'Current';
+                main.appendChild(tag);
+            }
+            option.appendChild(main);
+
+            // The field's label, which is often what people search by
+            if (item.label) {
+                const label = document.createElement('span');
+                label.className = 'adif-picker-option-label';
+                appendHighlighted(label, item.label, tokens);
+                option.appendChild(label);
+            }
+
+            // mousedown would move focus out of the search box and close the picker
+            option.addEventListener('mousedown', event => event.preventDefault());
+            option.addEventListener('click', () => chooseLookupFieldPickerItem(index));
+            option.addEventListener('mousemove', () => {
+                if (p.active !== index) setLookupFieldPickerActive(index, false);
+            });
+
+            p.items.push(item);
+            parent.appendChild(option);
+        };
+
+        const suggested = p.suggestions.filter(f => shownSet.has(f));
+        if (suggested.length) {
+            const suggestedGroup = group(`Suggested for [${p.select.dataset.placeholder}]`);
+            suggested.forEach(f => addOption(f, suggestedGroup, true));
+        }
+
+        // Everything else under its instrument, so the instrument's name appears once as a heading
+        const suggestedSet = new Set(suggested);
+        const byForm = new Map();
+        shown.forEach(f => {
+            if (suggestedSet.has(f)) return;
+            if (!byForm.has(f.form)) byForm.set(f.form, []);
+            byForm.get(f.form).push(f);
+        });
+
+        let drawn = suggested.length;
+        for (const [form, fields] of byForm) {
+            if (drawn >= PICKER_RESULT_LIMIT) break;
+            const formGroup = group(form, fields.length);
+            for (const f of fields) {
+                if (drawn >= PICKER_RESULT_LIMIT) break;
+                addOption(f, formGroup, false);
+                drawn++;
+            }
+        }
+
+        if (!shown.length) {
+            const empty = document.createElement('div');
+            empty.className = 'adif-picker-empty';
+            empty.textContent = tokens.length
+                ? `No fields match “${p.input.value.trim()}”${p.form ? ` in ${p.form}` : ''}.`
+                : 'This project has no fields that can hold a lookup value.';
+            p.list.appendChild(empty);
+        }
+
+        if (drawn < shown.length) {
+            p.count.textContent = `Showing ${drawn.toLocaleString()} of ${shown.length.toLocaleString()} — type to narrow`;
+        } else if (tokens.length || p.form) {
+            p.count.textContent = `${shown.length.toLocaleString()} of ${all.length.toLocaleString()} fields`;
+        } else {
+            p.count.textContent = `${all.length.toLocaleString()} fields`;
+        }
+
+        // Start on the chosen field when opening; while typing, on the first result
+        let active = p.items.length ? 0 : -1;
+        if (onOpen) {
+            const chosen = p.items.findIndex(f => f.name === p.select.value);
+            if (chosen !== -1) active = chosen;
+        }
+        setLookupFieldPickerActive(active, onOpen);
+        if (!onOpen) p.list.scrollTop = 0;
+    }
+
+    function setLookupFieldPickerActive(index, scroll) {
+        const p = fieldPicker;
+        p.list.querySelectorAll('.adif-picker-option.is-active').forEach(el => el.classList.remove('is-active'));
+        p.active = index;
+
+        const option = index >= 0 ? document.getElementById(`adif-field-picker-option-${index}`) : null;
+        if (option) {
+            option.classList.add('is-active');
+            p.input.setAttribute('aria-activedescendant', option.id);
+            if (scroll) option.scrollIntoView({block: 'nearest'});
+        } else {
+            p.input.removeAttribute('aria-activedescendant');
+        }
+    }
+
+    function chooseLookupFieldPickerItem(index) {
+        const p = fieldPicker;
+        if (!p || !p.select || index < 0 || index >= p.items.length) return;
+
+        const select = p.select;
+        const trigger = p.trigger;
+        const before = select.value;
+        select.value = p.items[index].name;
+        renderLookupTrigger(trigger, select);
+        closeLookupFieldPicker(true);
+        if (select.value !== before) select.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+
+    document.addEventListener('mousedown', event => {
+        if (!fieldPicker || !fieldPicker.trigger) return;
+        if (fieldPicker.el.contains(event.target) || fieldPicker.trigger.contains(event.target)) return;
+        closeLookupFieldPicker(false);
+    });
+    window.addEventListener('resize', () => {
+        if (fieldPicker && fieldPicker.trigger) positionPopover(fieldPicker.el, fieldPicker.trigger, 'left');
+    });
 
     // Saves every source's choices, as { "<source>": { "<placeholder>": "<field>" } }
     function saveLookupFields() {
