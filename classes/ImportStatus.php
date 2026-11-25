@@ -338,13 +338,16 @@ trait ImportStatus
     // event; in a repeating event, each of its instances; and for a mapped repeating instrument, each
     // of its instances - where:
     //   - the record has data there, so the event has happened (events it hasn't reached are left alone)
-    //   - every field the current mappings import there is empty
-    //   - no logged run has requested any of those fields there (see importAttemptedFields), and no
-    //     import for the record's event is waiting in the background queue
+    //   - at least one field the current mappings import there is empty and no logged run has requested
+    //     it there (see importAttemptedFields). Fields are judged one by one, so a place imported before
+    //     a field was mapped is listed again for the new field alone; fields that have a value, or that a
+    //     run has tried, are left to the run list
+    //   - no import for the record's event is waiting in the background queue
     // Each entry: record, event_id, event_name (null in a classic project), instrument (the repeating
     // instrument, or null for the event's other mapped fields), repeat_instance, repeats, fields (the
-    // mapped fields there), missing (why lookup values the import needs can't be read from the record
-    // yet, as the import would log it - field names, never values) and importable (whether at least
+    // mapped fields still waiting on a first import, the only ones it imports), missing (why lookup
+    // values the import needs can't be read from the record yet, as the import would log it - field
+    // names, never values) and importable (whether at least
     // one of its endpoint requests has everything it needs).
     // $record checks one record only: the page's record filter, and runFirstImport()'s re-check.
     public function importNeverAttempted($projectId, $record = null)
@@ -375,13 +378,19 @@ trait ImportStatus
             $name = $place['record'];
             $shape = $place['shape'];
             $instance = $place['instance'];
-            if (!self::importFieldsEmpty($place['row'], $shape['fields'], $dictionary)
-                || self::importUnitAttempted($attempted, $name, $shape, $instance)
-                || isset($queued[$name][$shape['event_id']])) {
+            if (isset($queued[$name][$shape['event_id']])) {
+                continue;
+            }
+            $pending = self::importUnitPendingFields($attempted, $name, $shape, $instance, $place['row'], $dictionary);
+            if (empty($pending)) {
                 continue;
             }
 
-            [$missing, $importable] = $this->importUnitLookupCheck($place['rows'], $name, $shape, $instance, $dictionary);
+            // Only the requests that fill a pending field are checked here, and made by the import
+            $pendingShape = $shape;
+            $pendingShape['lookups'] = array_intersect_key($shape['lookups'], array_filter($shape['request_fields'],
+                fn($requestFields) => !empty(array_intersect($requestFields, $pending))));
+            [$missing, $importable] = $this->importUnitLookupCheck($place['rows'], $name, $pendingShape, $instance, $dictionary);
             $units[] = [
                 'record' => $name,
                 'event_id' => $shape['event_id'],
@@ -389,7 +398,7 @@ trait ImportStatus
                 'instrument' => $shape['instrument'],
                 'repeat_instance' => $instance,
                 'repeats' => $shape['repeats'],
-                'fields' => $shape['fields'],
+                'fields' => $pending,
                 'missing' => $missing,
                 'importable' => $importable,
             ];
@@ -521,8 +530,10 @@ trait ImportStatus
                 $plan = $this->importUnitPlan($projectId, $eventId, $instrument, 1);
                 $fields = [];
                 $lookups = [];
+                $requestFields = [];
                 foreach ($plan['requests'] as $key => $request) {
                     array_push($fields, ...array_column($request['fields'], 'field'));
+                    $requestFields[$key] = array_values(array_unique(array_column($request['fields'], 'field')));
                     $lookups[$key] = [];
                     if (preg_match_all('/\[([a-z][a-z0-9_]*)\]/', (string) $request['path'], $matches)) {
                         foreach (array_unique($matches[1]) as $placeholder) {
@@ -541,6 +552,7 @@ trait ImportStatus
                     'repeats' => $instrument !== null || $eventRepeats,
                     'fields' => array_values(array_unique($fields)),
                     'lookups' => $lookups,
+                    'request_fields' => $requestFields,
                     'context' => $plan['lookup_context'],
                     'status_fields' => array_map(fn($form) => $form . '_complete', $instrument !== null ? [$instrument] : $forms),
                 ];
@@ -609,20 +621,40 @@ trait ImportStatus
         return true;
     }
 
-    // Whether the module log shows an import having tried any of a place's fields (see importAttemptedFields)
-    private static function importUnitAttempted(array $attempted, $record, array $shape, $instance)
+    // The fields of a place still waiting on a first import: empty in its getData() row (a checkbox: no
+    // option ticked) and never requested there by a logged run (see importAttemptedFields). None when a
+    // run that doesn't say which fields it requested covers the place, since it counts as having tried
+    // them all.
+    private static function importUnitPendingFields(array $attempted, $record, array $shape, $instance, array $row, array $dictionary)
     {
         $tried = $attempted[$record] ?? [];
-        if (isset($tried['any'][0]) || isset($tried['any'][$shape['event_id']])) {
-            return true;
+        $eventId = $shape['event_id'];
+        if (isset($tried['any'][0]) || isset($tried['any'][$eventId])
+            || ($shape['instrument'] !== null
+                && isset($tried['any_instance'][$eventId][$shape['instrument']][(string) $instance]))) {
+            return [];
         }
         $instanceKey = $shape['repeats'] ? (string) $instance : '*';
+        $pending = [];
         foreach ($shape['fields'] as $field) {
-            if (isset($tried['fields'][$shape['event_id']][$instanceKey][$field])) {
-                return true;
+            if (!isset($tried['fields'][$eventId][$instanceKey][$field])
+                && self::importFieldsEmpty($row, [$field], $dictionary)) {
+                $pending[] = $field;
             }
         }
-        return false;
+        return $pending;
+    }
+
+    // Records that a run tried everything it could at a place without saying which fields
+    // (see importAttemptedFields): a run of one instance of a repeating instrument covers that instance;
+    // any other run covers its whole event
+    private static function importMarkAttemptedAll(array &$attempted, $record, $eventId, $instrument, $instance)
+    {
+        if ($instrument === null) {
+            $attempted[$record]['any'][$eventId] = true;
+        } else {
+            $attempted[$record]['any_instance'][$eventId][$instrument][(string) max(1, (int) $instance)] = true;
+        }
     }
 
     // Whether a first import's [placeholder] values can be read from the record yet, by the same
@@ -668,12 +700,15 @@ trait ImportStatus
     //            failed before making a request, or the run was logged without per-request entries),
     //            which count as having tried everything in their event; event_id 0 for runs logged
     //            without one, which count for every event
+    //   any_instance - [event_id => [instrument => [instance => true]]]: the same for runs of one
+    //            instance of a repeating instrument, which cover only that instance, so a failed
+    //            instance doesn't hide its event's other fields from the Never imported list
     // Every import run is read, however old: one attempt is enough to leave a place off the list, and
     // anything it left empty is the run list's to show.
     private function importAttemptedFields($projectId, $project, array $dictionary, $record = null)
     {
         $sql = 'select distinct l.record, l.message, e.value as event_id, r.value as repeat_instance,'
-            . ' f.value as fields_requested, n.value as requests'
+            . ' f.value as fields_requested, n.value as requests, i.value as instrument'
             . ' from redcap_external_modules_log l'
             . ' join redcap_external_modules m on m.external_module_id = l.external_module_id'
             . ' and m.directory_prefix = ?'
@@ -681,6 +716,7 @@ trait ImportStatus
             . ' left join redcap_external_modules_log_parameters r on r.log_id = l.log_id and r.name = \'repeat_instance\''
             . ' left join redcap_external_modules_log_parameters f on f.log_id = l.log_id and f.name = \'fields_requested\''
             . ' left join redcap_external_modules_log_parameters n on n.log_id = l.log_id and n.name = \'requests\''
+            . ' left join redcap_external_modules_log_parameters i on i.log_id = l.log_id and i.name = \'instrument\''
             . ' where l.project_id = ? and l.message like ?';
         $parameters = [$this->getPrefix(), (int) $projectId, self::$importLogPrefix . '%'];
         if ($record !== null) {
@@ -695,18 +731,23 @@ trait ImportStatus
                 continue;
             }
             $eventId = is_numeric($row['event_id'] ?? null) ? (int) $row['event_id'] : 0;
+            // A run of one instance of a repeating instrument (in an event that doesn't repeat)
+            $runInstrument = (string) ($row['instrument'] ?? '');
+            $instanceRun = $eventId > 0 && $runInstrument !== '' && !$project->isRepeatingEvent($eventId)
+                && $project->isRepeatingForm($eventId, $runInstrument);
+            $scope = $instanceRun ? $runInstrument : null;
 
             if (($row['message'] ?? '') !== self::$importRequestLogMessage) {
                 // A run's summary entry: only tells us something when the run made no requests
                 if ((int) ($row['requests'] ?? 0) === 0) {
-                    $attempted[$rowRecord]['any'][$eventId] = true;
+                    self::importMarkAttemptedAll($attempted, $rowRecord, $eventId, $scope, $row['repeat_instance'] ?? 1);
                 }
                 continue;
             }
 
             $requested = array_filter(array_map('trim', explode(',', (string) ($row['fields_requested'] ?? ''))), 'strlen');
             if (empty($requested)) {
-                $attempted[$rowRecord]['any'][$eventId] = true;
+                self::importMarkAttemptedAll($attempted, $rowRecord, $eventId, $scope, $row['repeat_instance'] ?? 1);
                 continue;
             }
             $instance = (string) max(1, (int) ($row['repeat_instance'] ?? 1));
@@ -772,8 +813,7 @@ trait ImportStatus
             $start = microtime(true);
             try {
                 $summary = $this->importMappedData($projectId, $unit['record'], $unit['event_id'], $unit['instrument'],
-                    $unit['repeat_instance'], null,
-                    $this->importUnitPlan($projectId, $unit['event_id'], $unit['instrument'], $unit['repeat_instance']));
+                    $unit['repeat_instance'], null, $this->importPendingPlan($projectId, $unit));
             } catch (\Throwable $e) {
                 $summary = ['errors' => [$e->getMessage()]];
             }
@@ -788,6 +828,25 @@ trait ImportStatus
 
         return ['status' => 'success', 'run' => $this->importRunFromSummary($projectId, $description, $username,
             $unit['record'], $unit['event_id'], $unit['instrument'], $unit['repeat_instance'], $summary)];
+    }
+
+    // importUnitPlan() narrowed to the fields still waiting on a first import (the entry's fields), so
+    // importing a field mapped after the place's first import doesn't call its other sources again or
+    // overwrite values already there
+    private function importPendingPlan($projectId, array $unit)
+    {
+        $plan = $this->importUnitPlan($projectId, $unit['event_id'], $unit['instrument'], $unit['repeat_instance']);
+        $requests = [];
+        foreach ($plan['requests'] as $key => $request) {
+            $request['fields'] = array_values(array_filter($request['fields'],
+                fn($target) => in_array($target['field'], $unit['fields'], true)));
+            if (!empty($request['fields'])) {
+                $requests[$key] = $request;
+            }
+        }
+        $plan['requests'] = $requests;
+
+        return $plan;
     }
 
     // Marks the runs whose "Needs attention" was dismissed (and not since undone): outcome becomes

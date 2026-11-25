@@ -214,11 +214,14 @@ instance of a mapped repeating instrument, which is a place of its own. It lists
 - **the record has data there.** The record has a row for that event or instance with a value in it,
   so the event has happened. Events a record hasn't reached are left alone, as a survey trigger
   would leave them.
-- **every field the current mappings import there is empty.** For a checkbox, no option is ticked.
-- **no logged run has requested any of those fields there.** This is read from every import run's
-  per-request `fields_requested`, however old. A run that made no requests, or that doesn't say which
-  fields it requested, counts as having tried everything in its event. One attempt is enough to leave
-  a place off the list: if that attempt left fields empty, the run list flags it.
+- **at least one field the current mappings import there is still waiting on a first import**: it's
+  empty (for a checkbox, no option is ticked) and no logged run has requested it there. Fields are
+  judged one by one, so a place that was imported before a new field was mapped is listed again, for
+  the new field alone (`importUnitPendingFields()`). Requests come from every import run's per-request
+  `fields_requested`, however old. A run that made no requests, or that doesn't say which fields it
+  requested, counts as having tried everything at its place: its whole event, or for a run of one
+  instance of a repeating instrument, just that instance. One attempt is enough to leave a field off
+  the list: if that attempt left it empty, the run list flags it.
 
 All of this comes from one `REDCap::getData()` call (the mapped fields, their lookup fields and the
 instruments' form status fields) and one query on the module log. The record filter narrows both to
@@ -240,8 +243,10 @@ for a cron instead (see "Import all" below). Either way, each import goes throug
 - **Re-check first:** the place is looked up again for that one record. If it has been imported since
   the page loaded (another tab, Import all, a survey), or its fields have values now, nothing runs
   and the row says so. This also means only places the detection would list can be imported.
-- **The import:** `Import::importMappedData()` with the place's plan (`importUnitPlan()`: for a
-  repeating instrument, only that instrument's fields). It reads stored data as the project's cache
+- **The import:** `Import::importMappedData()` with the place's plan narrowed to its pending fields
+  (`importPendingPlan()`, built on `importUnitPlan()`: for a repeating instrument, only that
+  instrument's fields). Only the requests for those fields are made, so a newly mapped field is
+  imported without calling the place's other sources again or overwriting their values. It reads stored data as the project's cache
   settings allow, as a survey submission's import would, rather than bypassing the cache.
 - **Audit trail:** logged like any run, as `API import: manual import by <username>` (or, from
   Import all, `API import: import all, requested by <username>`), so it joins the run list. A failure

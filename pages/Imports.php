@@ -138,8 +138,8 @@ $queueOverdue = $queueOldest !== null && time() - $queueOldest > $module::$impor
 // The queue card lists this many; Run queued imports now still works through all of them
 $queueShownCap = 50;
 
-// Records with data whose mapped fields are empty and have never had an import tried - usually
-// entered before the module was enabled (see ImportStatus::importNeverAttempted)
+// Records with data and mapped fields that are empty and have never had an import tried - usually
+// entered before the module was enabled, or fields mapped since (see ImportStatus::importNeverAttempted)
 $neverImported = [];
 $neverImportedError = null;
 try {
@@ -941,9 +941,9 @@ function adif_imp_instrument($run)
                     record<?= $neverRecordCount === 1 ? '' : 's' ?> with data but no import yet<?= $recordFilter !== ''
                         ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></span>
             </summary>
-            <p class="adif-imp-explain">These records have data in an event (or instance) where every mapped field is
-                still empty and no import has ever been tried &mdash; usually records entered before ADIF was enabled,
-                or before these fields were mapped. Imports run when a survey is submitted, so these won't fill on their
+            <p class="adif-imp-explain">These records have data in an event (or instance) with mapped fields that are
+                still empty and have never been imported &mdash; usually records entered before ADIF was enabled,
+                or fields mapped after a record&rsquo;s first import, which are imported on their own. Imports run when a survey is submitted, so these won't fill on their
                 own. Import them one at a time here, or all at once from <strong>Actions</strong>. An import started here
                 works like a survey's, and is logged and listed in the run table like any other run.</p>
             <?php if ($canRetry): ?>
