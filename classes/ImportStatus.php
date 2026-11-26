@@ -41,7 +41,9 @@ trait ImportStatus
     //   description, requests (count), api_calls, elapsed_ms, saved, skipped, errors, notices,
     //   not_populated, request_logs (the per-endpoint entries), outcome and explanation (see below),
     //   dismissed (null, or [user, at, reason] when the run's "Needs attention" was dismissed, in
-    //   which case outcome is 'dismissed' - see importApplyDismissals)
+    //   which case outcome is 'dismissed' - see importApplyDismissals), and fixed_by (null, or
+    //   [run_id, logged, user] of the later import that saved the last field it left empty, in which
+    //   case outcome is 'fixed' - see importApplyLaterFixes)
     // $filters accepts 'record' (one record's runs only) and 'limit' (how many runs, default 50).
     public function importRuns($projectId, $filters = [])
     {
@@ -115,7 +117,65 @@ trait ImportStatus
         }
         unset($run);
 
-        return $this->importApplyDismissals($projectId, $runs);
+        return $this->importApplyDismissals($projectId, $this->importApplyLaterFixes($projectId, $runs));
+    }
+
+    // Marks flagged runs whose problem a later import solved: every field the run left empty (see
+    // importRunEmptyFields) was saved by a later run at the same place - the same record and event,
+    // and for a field on a repeating instrument or in a repeating event, the same instance. Their
+    // outcome becomes 'fixed', so they stop counting as needing attention, and fixed_by names the run
+    // that saved the last of those fields. A field filled another way (typed in, say) doesn't count:
+    // the run stays flagged until it's retried or dismissed. $runs is newest first, as importRuns()
+    // builds it; any later run of a flagged one is newer, so it's among them too.
+    private function importApplyLaterFixes($projectId, array $runs)
+    {
+        $project = null;
+        $dictionary = null;
+        $split = fn($list) => array_filter(array_map('trim', preg_split('/[,\n]/', (string) $list)), 'strlen');
+        $place = function (array $run, $field) use (&$project, &$dictionary, $projectId) {
+            $project ??= new \Project($projectId);
+            $dictionary ??= REDCap::getDataDictionary($projectId, 'array');
+            $eventId = is_numeric($run['event_id'] ?? null) ? (int) $run['event_id'] : 0;
+            $form = (string) ($dictionary[$field]['form_name'] ?? '');
+            $repeats = $eventId > 0 && ($project->isRepeatingEvent($eventId)
+                || ($form !== '' && $project->isRepeatingForm($eventId, $form)));
+            return json_encode([(string) $run['record'], $eventId, $field,
+                $repeats ? max(1, (int) ($run['repeat_instance'] ?? 1)) : '*']);
+        };
+
+        $open = [];   // [run index => [place => true]]: what each flagged run is still waiting for
+        foreach (array_reverse(array_keys($runs)) as $i) {   // oldest first
+            $run = $runs[$i];
+            $saved = $split($run['saved'] ?? '');
+            foreach ($run['request_logs'] ?? [] as $request) {
+                array_push($saved, ...$split($request['fields_saved'] ?? ''));
+            }
+            if (!empty($saved) && !empty($open)) {
+                $places = array_map(fn($field) => $place($run, $field), array_unique($saved));
+                foreach (array_keys($open) as $j) {
+                    if ($runs[$j]['record'] !== $run['record']) {
+                        continue;
+                    }
+                    foreach ($places as $key) {
+                        unset($open[$j][$key]);
+                    }
+                    if (empty($open[$j])) {
+                        $runs[$j]['outcome'] = 'fixed';
+                        $runs[$j]['fixed_by'] = ['run_id' => $run['run_id'], 'logged' => $run['logged'], 'user' => $run['user']];
+                        unset($open[$j]);
+                    }
+                }
+            }
+            $runs[$i]['fixed_by'] = $runs[$i]['fixed_by'] ?? null;
+            if ($run['outcome'] === 'attention') {
+                $empty = $this->importRunEmptyFields($run);
+                if (!empty($empty)) {
+                    $open[$i] = array_fill_keys(array_map(fn($field) => $place($run, $field), $empty), true);
+                }
+            }
+        }
+
+        return $runs;
     }
 
     // Reads the module log's import entries as [message, timestamp, username, record, <parameter>...]
@@ -1301,6 +1361,7 @@ trait ImportStatus
             'attention' => 'Needs attention',
             'dismissed' => 'Dismissed',
             'stale' => 'From stored data',
+            'fixed' => 'Fixed later',
             default => 'OK',
         };
     }

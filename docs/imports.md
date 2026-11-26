@@ -99,6 +99,7 @@ only flags runs where data is actually missing:
 |---|---|---|
 | **Needs attention** | A request errored (`outcome = error`) or saved nothing while leaving fields not populated - or the run's summary has errors (e.g. the final `saveData` failed) | Those fields are still empty. The import should be run again. |
 | **From stored data** | Every failing request was answered from the cache because the API was down (`outcome = stale`) and its fields were filled | Intended behaviour (`cache-on-failure: use_stale`). Noted, not flagged. |
+| **Fixed later** | A run that needed attention, every one of whose empty fields was saved by a later import at the same place (record, event and, for a repeating instrument or event, instance) | Solved by a retry or a later import. Counted and listed with **OK**, not a filter of its own; its details say which run fixed it (`ImportStatus::importApplyLaterFixes()`). A field typed in by hand doesn't count: dismiss the run instead. |
 | **OK** | Everything else | Includes requests whose fields were skipped because the API returned no value at a mapped path - that's an answer, not a failure. |
 
 A request that saved its fields never flags anything, whatever happened elsewhere in the run. A run

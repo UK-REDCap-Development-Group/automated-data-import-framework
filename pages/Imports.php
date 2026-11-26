@@ -207,10 +207,14 @@ $neverShownCap = 200;
 
 // The table: the runs with the chosen outcome, one page of them at a time. Each outcome's count is
 // shown on its filter tab.
-$outcomeCounts = array_count_values(array_column($allRuns, 'outcome'));
+// A flagged run that a later import fixed ('fixed') is listed and counted with the OK runs: it isn't
+// a filter of its own
+$outcomeCounts = array_count_values(array_map(fn($outcome) => $outcome === 'fixed' ? 'ok' : $outcome,
+    array_column($allRuns, 'outcome')));
 $runs = $allRuns;
 if ($statusFilter !== '') {
-    $runs = array_values(array_filter($runs, fn($run) => $run['outcome'] === $statusFilter));
+    $runs = array_values(array_filter($runs, fn($run) => $run['outcome'] === $statusFilter
+        || ($statusFilter === 'ok' && $run['outcome'] === 'fixed')));
 }
 $pageCount = max(1, (int) ceil(count($runs) / $perPage));
 $currentPage = min($pageParam, $pageCount);
@@ -284,7 +288,7 @@ function adif_imp_pill($outcome, $label)
         'attention' => 'adif-status-error',
         'dismissed' => 'adif-status-none',
         'stale' => 'adif-status-stale',
-        'ok' => 'adif-status-ok',
+        'ok', 'fixed' => 'adif-status-ok',
         default => 'adif-status-none',
     };
     return '<span class="adif-status-pill ' . $class . '">' . adif_imp_h($label) . '</span>';
@@ -830,6 +834,12 @@ function adif_imp_instrument($run)
                             <?php elseif ($run['outcome'] === 'stale'): ?>
                                 <div class="adif-alert adif-alert-empty">Answered from stored data during an API outage; its fields
                                     were filled. <?= nl2br(adif_imp_h($run['notices'])) ?></div>
+                            <?php elseif ($run['outcome'] === 'fixed' && !empty($run['fixed_by'])): ?>
+                                <div class="adif-alert adif-imp-success adif-imp-status-note">Fixed by a later import: every field
+                                    this run left empty was saved by run <?= adif_imp_h($run['fixed_by']['run_id']) ?> on
+                                    <?= adif_imp_h(date('Y-m-d H:i', $run['fixed_by']['logged'])) ?><?= $run['fixed_by']['user'] !== ''
+                                        ? ' by ' . adif_imp_h($run['fixed_by']['user']) : '' ?>. It no longer needs attention. It left
+                                    empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
                             <?php endif; ?>
 
                             <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
