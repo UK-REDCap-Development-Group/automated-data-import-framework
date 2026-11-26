@@ -87,6 +87,9 @@
             url: url,
             probePath: settingValue('schema-probe', suffix),
             apiKey: settingValue('api-key', suffix),
+            keyLocation: settingValue('api-key-location', suffix),
+            keyName: settingValue('api-key-name', suffix),
+            responseTable: $(MODAL).find(`[name="response-table${suffix}"]`).is(':checked'),
             instance: Number(suffix.split(INSTANCE_SYMBOL).pop())
         }).then(function (response) {
             if (!response || response.status !== 'success') {

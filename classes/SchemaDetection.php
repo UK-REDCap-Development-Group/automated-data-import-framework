@@ -30,7 +30,9 @@ trait SchemaDetection
     // is, and may contain [field_name] placeholders. Detected fields are given that path verbatim,
     // so the placeholders are filled from the record at import time.
     // Returns ['schema' => [...], 'method' => 'socrata'|'openapi'|'sample', 'message' => ...]
-    public function detectApiSchema($baseUrl, $apiKey = '', $probePath = '')
+    // $keyPlacement and $responseTable are the source's key location and "Responses are tables" setting,
+    // as typed into the form (see Proxy::apiKeyPlacement and Proxy::apiTableRows).
+    public function detectApiSchema($baseUrl, $apiKey = '', $probePath = '', $keyPlacement = null, $responseTable = false)
     {
         $baseUrl = trim((string) $baseUrl);
         $apiKey = trim((string) $apiKey);
@@ -50,7 +52,7 @@ trait SchemaDetection
         if ($requestPath === null) {
             $tried[] = "$probePath was not requested, since a [placeholder] in its path can only be filled from a record";
         } else {
-            $probe = $this->sendApiRequest($baseUrl, $apiKey, $requestPath);
+            $probe = $this->sendApiRequest($baseUrl, $apiKey, $requestPath, 'GET', [], $keyPlacement);
             $tried[] = $this->describeAttempt($probe);
 
             if ($probe['success']) {
@@ -63,7 +65,7 @@ trait SchemaDetection
         }
 
         foreach (self::$openApiLocations as $location) {
-            $document = $this->sendApiRequest($baseUrl, $apiKey, $location);
+            $document = $this->sendApiRequest($baseUrl, $apiKey, $location, 'GET', [], $keyPlacement);
             $tried[] = $this->describeAttempt($document);
 
             $json = $document['bodyJson'];
@@ -80,14 +82,19 @@ trait SchemaDetection
         }
 
         if ($probe !== null && $probe['success'] && is_array($probe['bodyJson'])) {
+            $sample = $responseTable ? self::apiTableRows($probe['bodyJson']) : $probe['bodyJson'];
+            $tableHint = !$responseTable && self::looksLikeApiTable($probe['bodyJson'])
+                ? ' The response looks like a table whose first row names the columns: tick "Responses are tables"'
+                    . ' and detect again to map fields by column name instead of by position.'
+                : '';
             $fields = [];
-            foreach ($this->inferSchemaPaths($probe['bodyJson']) as $path) {
+            foreach ($this->inferSchemaPaths($sample) as $path) {
                 $fields[] = ['field' => $path, 'endpoint' => $label, 'path' => $probePath];
             }
             if (!empty($fields)) {
                 return $this->detectedSchema('sample', $probe['requestUrl'], $fields,
                     'The API doesn\'t publish a schema, so ' . count($fields) . ' fields were read from a sample response.'
-                    . ' Fields the sample didn\'t include will be missing.');
+                    . ' Fields the sample didn\'t include will be missing.' . $tableHint);
             }
         }
 

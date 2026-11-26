@@ -95,12 +95,16 @@ trait Proxy
     }
 
     // Pulls the configured API source at $sourceIndex out of the repeatable "api-sources" group.
-    // Returns ['url' => ..., 'apiKey' => ..., 'schema' => ...]
+    // Returns ['url' => ..., 'apiKey' => ..., 'keyPlacement' => (see apiKeyPlacement), 'schema' => ...,
+    // 'responseTable' => whether its responses are tables (see apiTableRows)]
     protected function getApiSource($sourceIndex)
     {
         $urls = $this->getProjectSetting('api') ?: [];
         $apiKeys = $this->getProjectSetting('api-key') ?: [];
         $schemas = $this->getProjectSetting('schema') ?: [];
+        $keyLocations = $this->getProjectSetting('api-key-location') ?: [];
+        $keyNames = $this->getProjectSetting('api-key-name') ?: [];
+        $tables = $this->getProjectSetting('response-table') ?: [];
 
         if (!array_key_exists($sourceIndex, $urls) || empty(trim((string) $urls[$sourceIndex]))) {
             throw new \Exception("No API source is configured at index \"$sourceIndex\".");
@@ -109,8 +113,79 @@ trait Proxy
         return [
             'url' => trim($urls[$sourceIndex]),
             'apiKey' => trim((string) ($apiKeys[$sourceIndex] ?? '')),
+            'keyPlacement' => self::apiKeyPlacement(is_array($keyLocations) ? ($keyLocations[$sourceIndex] ?? null) : null,
+                is_array($keyNames) ? ($keyNames[$sourceIndex] ?? null) : null),
             'schema' => $schemas[$sourceIndex] ?? null,
+            'responseTable' => is_array($tables) && self::apiSettingIsTrue($tables[$sourceIndex] ?? null),
         ];
+    }
+
+    // Where a source's API key goes: ['location' => 'bearer' | 'header' | 'query', 'name' => the header or
+    // query parameter's name]. Anything unset or unknown is a Bearer header, as before the setting existed.
+    public static function apiKeyPlacement($location, $name = null)
+    {
+        $location = in_array($location, ['header', 'query'], true) ? $location : 'bearer';
+        $name = trim((string) $name);
+        if ($location === 'header' && $name === '') {
+            $name = 'X-API-Key';
+        } elseif ($location === 'query' && $name === '') {
+            $name = 'key';
+        }
+        return ['location' => $location, 'name' => $location === 'bearer' ? '' : $name];
+    }
+
+    // A checkbox sub-setting's saved value, however the framework or the Data Sources page stored it
+    public static function apiSettingIsTrue($value)
+    {
+        return $value === true || $value === 1 || $value === '1' || $value === 'true';
+    }
+
+    // An API response that's a table - a list of rows whose first row names the columns, as the Census
+    // API returns - turned into a list of records keyed by those names, the way an uploaded JSON table is
+    // read (see DataTableFormats): [["NAME","B01003_001E"],["Tract 1","4321"]] becomes
+    // [{"NAME":"Tract 1","B01003_001E":"4321"}], so a value is mapped as [0].B01003_001E instead of by
+    // position. Used for sources whose "response-table" setting is ticked; a response that isn't shaped
+    // like a table (an error object, say) is returned unchanged.
+    public static function apiTableRows($data)
+    {
+        if (!self::looksLikeApiTable($data)) {
+            return $data;
+        }
+        $header = array_map(fn($name) => (string) $name, $data[0]);
+        $rows = [];
+        foreach (array_slice($data, 1) as $values) {
+            $row = [];
+            foreach ($header as $i => $name) {
+                // A blank or repeated column name can't be told apart in a mapping path
+                if ($name === '' || array_key_exists($name, $row)) {
+                    continue;
+                }
+                $row[$name] = $values[$i] ?? null;
+            }
+            $rows[] = $row;
+        }
+        return $rows;
+    }
+
+    // Whether a decoded response has a table's shape: a list whose first entry is a list of column names
+    // (text), followed by at least one list of values
+    public static function looksLikeApiTable($data)
+    {
+        if (!is_array($data) || !array_is_list($data) || count($data) < 2
+            || !is_array($data[0]) || !array_is_list($data[0]) || empty($data[0])) {
+            return false;
+        }
+        foreach ($data[0] as $name) {
+            if (!is_string($name)) {
+                return false;
+            }
+        }
+        foreach (array_slice($data, 1) as $row) {
+            if (!is_array($row) || !array_is_list($row)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // Sends a request to a configured API source and returns everything about the exchange
@@ -125,12 +200,15 @@ trait Proxy
 
         $source = $this->getApiSource($sourceIndex);
 
-        return $this->sendApiRequest($source['url'], $source['apiKey'], $apiPath, $method, $payload);
+        return $this->sendApiRequest($source['url'], $source['apiKey'], $apiPath, $method, $payload, $source['keyPlacement']);
     }
 
     // Does the actual HTTP work for dispatchApiRequest. Kept separate so schema detection can
     // call a URL and key typed into the configuration dialog before they've been saved.
-    public function sendApiRequest($baseUrl, $apiKey, $apiPath, $method = 'GET', $payload = [])
+    // $keyPlacement says where the key goes (see apiKeyPlacement); null is a Bearer header. The key is
+    // never in what's returned: requestUrl and requestHeaders show [redacted] in its place, and it's
+    // removed from error messages, which quote the URL.
+    public function sendApiRequest($baseUrl, $apiKey, $apiPath, $method = 'GET', $payload = [], $keyPlacement = null)
     {
         $apiPath = (string) $apiPath;
         // A path that is only a query string (?a=b) attaches directly, rather than as /?a=b,
@@ -146,11 +224,32 @@ trait Proxy
         $headers = [
             'Accept' => 'application/json'
         ];
+        // What the result reports as sent: the same, with the key itself replaced
+        $shownHeaders = $headers;
+        $sendUrl = $apiUrl;
+        $shownUrl = $apiUrl;
 
-        // Sources configured without an API key are called unauthenticated
-        if (!empty($apiKey)) {
-            $headers['Authorization'] = "Bearer {$apiKey}";
+        // Sources configured without an API key are called unauthenticated. With one, the key goes where
+        // the source says the API expects it: a Bearer header by default, a named header, or a named
+        // query parameter such as the Census API's key=. It's added here, at request time, so it never
+        // has to be written into a schema path, and stays out of cache keys and import logs.
+        $apiKey = trim((string) $apiKey);
+        if ($apiKey !== '') {
+            $placement = self::apiKeyPlacement($keyPlacement['location'] ?? null, $keyPlacement['name'] ?? null);
+            if ($placement['location'] === 'query') {
+                $separator = str_contains($apiUrl, '?') ? '&' : '?';
+                $sendUrl = $apiUrl . $separator . rawurlencode($placement['name']) . '=' . rawurlencode($apiKey);
+                $shownUrl = $apiUrl . $separator . rawurlencode($placement['name']) . '=[redacted]';
+            } elseif ($placement['location'] === 'header') {
+                $headers[$placement['name']] = $apiKey;
+                $shownHeaders[$placement['name']] = '[redacted]';
+            } else {
+                $headers['Authorization'] = "Bearer {$apiKey}";
+                $shownHeaders['Authorization'] = 'Bearer [redacted]';
+            }
         }
+        $redact = fn($text) => $apiKey === '' || $text === null ? $text
+            : str_replace([$apiKey, rawurlencode($apiKey)], '[redacted]', (string) $text);
 
         $requestOptions = [
             'headers' => $headers
@@ -162,9 +261,9 @@ trait Proxy
         }
 
         $result = [
-            'requestUrl' => $apiUrl,
+            'requestUrl' => $shownUrl,
             'requestMethod' => $method,
-            'requestHeaders' => $headers,
+            'requestHeaders' => $shownHeaders,
             'success' => false,
             'statusCode' => null,
             'reasonPhrase' => null,
@@ -187,7 +286,7 @@ trait Proxy
         $start = microtime(true);
 
         try {
-            $response = $client->request($method, $apiUrl, $requestOptions);
+            $response = $client->request($method, $sendUrl, $requestOptions);
             $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
 
             $body = $response->getBody()->getContents();
@@ -202,7 +301,7 @@ trait Proxy
             $result['byteSize'] = strlen($body);
         } catch (RequestException $e) {
             $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
-            $result['error'] = $e->getMessage();
+            $result['error'] = $redact($e->getMessage());
 
             if ($e->hasResponse()) {
                 $response = $e->getResponse();
@@ -220,7 +319,7 @@ trait Proxy
             // Timeouts and connection failures: in Guzzle 7 ConnectException isn't a RequestException,
             // so without this they'd escape and skip the cache's "use the stored value" fallback.
             $result['elapsedMs'] = round((microtime(true) - $start) * 1000, 1);
-            $result['error'] = $e->getMessage();
+            $result['error'] = $redact($e->getMessage());
         }
 
         return $result;

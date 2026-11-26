@@ -86,8 +86,14 @@ trait ApiCache
                 . date('Y-m-d', $result->entry->retrievedAt) . '.';
         }
 
+        // Stored as the API sent it; a table response is turned into records here, as it's read
+        $json = $result->value();
+        if ($json !== null && $this->getApiSource((int) $sourceIndex)['responseTable']) {
+            $json = self::apiTableRows($json);
+        }
+
         return [
-            'json'       => $result->value(),
+            'json'       => $json,
             'status'     => $result->status,
             'message'    => $result->message,
             'provenance' => $result->entry ? [
@@ -162,8 +168,10 @@ trait ApiCache
         $public   = $this->getProjectSetting('lookups-are-public', $projectId) ?: [];
         $versions = $this->getProjectSetting('data-version', $projectId) ?: [];
         // Every request the cache actually sends goes through here, so it's where calls are traced
-        $send     = function ($url, $key, $path) {
-            $response = $this->sendApiRequest($url, $key, $path);
+        // Where each source's key goes, by URL: a provider only knows its URL and key (see apiKeyPlacement)
+        $placements = [];
+        $send     = function ($url, $key, $path) use (&$placements) {
+            $response = $this->sendApiRequest($url, $key, $path, 'GET', [], $placements[$url] ?? null);
             $this->apiCallTrace[] = self::apiCallMetadata($response);
             return $response;
         };
@@ -173,6 +181,7 @@ trait ApiCache
         foreach ($this->getApiSources() as $source) {
             $index = $source['index'];
             $full  = $this->getApiSource($index);
+            $placements[$full['url']] ??= $full['keyPlacement'];
             $provider = new ConfiguredApiProvider(
                 sourceIndex:      $index,
                 url:              $full['url'],

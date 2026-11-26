@@ -566,9 +566,36 @@
                     "type": "json"
                 },
                 {
+                    "key": "response-table",
+                    "name": "<b>Responses are tables:</b> a list of rows whose first row names the columns, as the Census API returns. ADIF reads each later row as a record named by those columns, so a value is mapped as <code>[0].B19013_001E</code> rather than by position (<code>[1][7]</code>).",
+                    "type": "checkbox"
+                },
+                {
                     "key": "api-key",
                     "name": "If this source needs an API key, input it here.",
                     "type": "password"
+                },
+                {
+                    "key": "api-key-location",
+                    "name": "Where this API expects the key",
+                    "type": "dropdown",
+                    "choices": [
+                        { "value": "bearer", "name": "In an Authorization: Bearer header (default)" },
+                        { "value": "header", "name": "In a request header with the name below" },
+                        { "value": "query", "name": "As a query parameter with the name below" }
+                    ]
+                },
+                {
+                    "key": "api-key-name",
+                    "name": "Header or query parameter name for the key, e.g. <code>key</code> or <code>X-API-Key</code>",
+                    "type": "text",
+                    "branchingLogic": {
+                        "type": "or",
+                        "conditions": [
+                            { "field": "api-key-location", "value": "header" },
+                            { "field": "api-key-location", "value": "query" }
+                        ]
+                    }
                 },
                 {
                     "key": "cache-enabled",

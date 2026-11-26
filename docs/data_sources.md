@@ -53,6 +53,30 @@ until the page gets a proper field for it.
 - Changes are logged to the module log as `API source: added | saved | deleted | moved`, with the URL
   only.
 
+## API keys
+
+A saved key is added to every request by `Proxy::sendApiRequest`, where the source's **Where the API
+expects the key** setting says (`api-key-location`, with `api-key-name`; see `Proxy::apiKeyPlacement`):
+
+- **Authorization: Bearer header** (the default, and what a source saved before the setting existed uses)
+- **A named request header**, e.g. `X-API-Key` (the default name when none is given)
+- **A named query parameter**, e.g. `key` (the default name when none is given)
+
+The key is never written into a URL or a schema path, so it stays out of the cache key, the import log and
+the Mapping page. What a request reports as sent (`requestUrl`, `requestHeaders`) shows `[redacted]` in its
+place, and it's removed from error messages, which quote the URL.
+
+## Responses that are tables
+
+Some APIs answer with a table: a list of rows whose first row names the columns (the Census API's
+`[["NAME","B19013_001E",...],["Census Tract 1...","52000",...]]`). With **Responses are tables** ticked
+(`response-table`), ADIF turns each later row into a record named by those columns
+(`Proxy::apiTableRows`), the same way an uploaded JSON table is read, so a value is mapped as
+`[0].B19013_001E` rather than by position (`[1][7]`). Responses are cached as the API sent them and
+converted as they're read (`ApiCache::fetchApiJson`), so ticking or unticking the box doesn't need the cache
+cleared. **Detect schema** and **Test connection** use the setting too, and a sample response that looks like
+a table while the box is unticked says so.
+
 ## Test connection
 
 Sends one request to the saved URL plus a path, with the saved key, and shows the status, timing,

@@ -385,7 +385,9 @@ trait AuditLog
             $changes[] = 'API source added: ' . self::auditShown($new[$j]['api'] ?? '')
                 . (($new[$j]['api-key'] ?? '') !== '' ? ', with an API key' : '');
         }
-        $labels = ['api' => 'URL', 'api-key' => 'API key', 'schema' => 'schema', 'schema-probe' => 'schema endpoint'];
+        $labels = ['api' => 'URL', 'api-key' => 'API key', 'schema' => 'schema', 'schema-probe' => 'schema endpoint',
+            'api-key-location' => 'API key location', 'api-key-name' => 'API key name',
+            'response-table' => 'responses are tables'];
         foreach ($pairs as $i => $j) {
             foreach (self::auditValueChanges($old[$i], $new[$j], $labels) as $change) {
                 $changes[] = 'API source ' . self::auditShown($new[$j]['api'] ?? '') . ": $change";

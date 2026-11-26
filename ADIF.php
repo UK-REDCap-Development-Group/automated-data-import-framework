@@ -74,8 +74,15 @@ class ADIF extends AbstractExternalModule
     // Script assumes root level, so include folders
     protected function includeJS($path)
     {
-        // Use this function to use your JavaScript files in the frontend
-        echo '<script src="' . $this->getUrl($path) . '"></script>';
+        // Use this function to use your JavaScript files in the frontend. The file's modification time
+        // is added to the URL so browsers fetch a script again when it changes, instead of running a
+        // cached copy against a page that has moved on
+        $url = $this->getUrl($path);
+        $modified = @filemtime(__DIR__ . '/' . ltrim($path, '/'));
+        if ($modified) {
+            $url .= (str_contains($url, '?') ? '&' : '?') . 'v=' . $modified;
+        }
+        echo '<script src="' . $url . '"></script>';
     }
 
     // This function needs more updates before it is finished.
@@ -272,7 +279,9 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'success'] + $this->detectApiSchema(
                         $payload['url'] ?? '',
                         $this->apiKeyForDetection($payload),
-                        $payload['probePath'] ?? ''
+                        $payload['probePath'] ?? '',
+                        self::apiKeyPlacement($payload['keyLocation'] ?? null, $payload['keyName'] ?? null),
+                        self::apiSettingIsTrue($payload['responseTable'] ?? null)
                     );
                 } catch (\Throwable $e) {
                     return ['status' => 'error', 'message' => $e->getMessage()];

@@ -221,9 +221,15 @@ trait ApiSources
 
         $result = $this->dispatchApiRequest($index, $path);
 
+        // A table response is shown the way imports read it, so the preview's paths match the mappings
+        $json = $result['bodyJson'];
+        if ($json !== null && $this->getApiSource($index)['responseTable']) {
+            $json = self::apiTableRows($json);
+        }
+
         $preview = null;
-        if ($result['bodyJson'] !== null) {
-            $preview = json_encode($result['bodyJson'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json !== null) {
+            $preview = json_encode($json, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } elseif ($result['body'] !== null) {
             $preview = (string) $result['body'];
         }

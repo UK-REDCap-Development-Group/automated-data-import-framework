@@ -355,12 +355,14 @@ trait Import
         }
 
         // Every event and instance: a lookup value such as an address is often collected in another
-        // event (e.g. baseline) than the one being imported into
+        // event (e.g. baseline) than the one being imported into.
+        // The record ID field is always requested: asked for only fields on a repeating instrument,
+        // REDCap can return the record's own row alone, with no row per instance
         $data = json_decode(REDCap::getData([
             'project_id' => $projectId,
             'return_format' => 'json',
             'records' => [$record],
-            'fields' => array_values(array_unique($fieldFor)),
+            'fields' => array_values(array_unique(array_merge([(new \Project($projectId))->table_pk], array_values($fieldFor)))),
         ]), true) ?: [];
 
         $context = $context ?? $this->importLookupContext(new \Project($projectId), $eventId, null, 1);
@@ -374,6 +376,22 @@ trait Import
         return preg_replace_callback('/\[([a-z][a-z0-9_]*)\]/', function ($match) use ($values) {
             return rawurlencode($values[$match[1]]);
         }, $apiPath);
+    }
+
+    // What the record's rows hold for a lookup field, for an error message: one entry per row REDCap
+    // returned - its repeat instrument and instance, and whether the field has a value there. Names and
+    // instance numbers only, never values.
+    private static function importLookupRowsSeen(array $rows, $field)
+    {
+        $seen = [];
+        foreach ($rows as $row) {
+            $instrument = (string) ($row['redcap_repeat_instrument'] ?? '');
+            $instance = (string) ($row['redcap_repeat_instance'] ?? '');
+            $where = $instance === '' ? 'the record\'s own row' : ($instrument !== '' ? "$instrument #$instance" : "event instance #$instance");
+            $has = !array_key_exists($field, $row) ? 'no column' : ((string) $row[$field] !== '' ? 'has a value' : 'empty');
+            $seen[] = "$where: $has";
+        }
+        return ' Rows REDCap returned: ' . (empty($seen) ? 'none' : implode('; ', $seen)) . '.';
     }
 
     // Picks a lookup field's value from the record's rows (getData() returns one per event, and one
@@ -409,7 +427,7 @@ trait Import
                 }
             }
             throw new \Exception("Record $record has no value for $where in instance $instance of $form, which the"
-                . ' endpoint needs.');
+                . ' endpoint needs.' . self::importLookupRowsSeen($rows, $field));
         }
 
         if ($formHere && $context['event_repeats'] && !in_array($form, $context['repeating_forms'], true)) {
