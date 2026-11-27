@@ -74,8 +74,15 @@ class ADIF extends AbstractExternalModule
     // Script assumes root level, so include folders
     protected function includeJS($path)
     {
-        // Use this function to use your JavaScript files in the frontend
-        echo '<script src="' . $this->getUrl($path) . '"></script>';
+        // Use this function to use your JavaScript files in the frontend. The file's modification time
+        // is added to the URL so browsers fetch a script again when it changes, instead of running a
+        // cached copy against a page that has moved on
+        $url = $this->getUrl($path);
+        $modified = @filemtime(__DIR__ . '/' . ltrim($path, '/'));
+        if ($modified) {
+            $url .= (str_contains($url, '?') ? '&' : '?') . 'v=' . $modified;
+        }
+        echo '<script src="' . $url . '"></script>';
     }
 
     // This function needs more updates before it is finished.
@@ -235,6 +242,32 @@ class ADIF extends AbstractExternalModule
         return true;
     }
 
+    // When the configuration dialog opens (REDCap 11+): fills in the Control Center's read-only panel on
+    // PHP's upload limits ("adif-php-upload-limits" in config.json), which cap the data table settings
+    // under it but can't be changed from REDCap. See DataTables::phpUploadLimitsHtml.
+    function redcap_module_configuration_settings($project_id, $settings)
+    {
+        try {
+            $fill = function (&$list) use (&$fill) {
+                foreach ($list as &$setting) {
+                    if (!is_array($setting)) {
+                        continue;
+                    }
+                    if (($setting['key'] ?? null) === 'adif-php-upload-limits') {
+                        $setting['name'] = $this->phpUploadLimitsHtml();
+                    }
+                    if (isset($setting['sub_settings']) && is_array($setting['sub_settings'])) {
+                        $fill($setting['sub_settings']);
+                    }
+                }
+            };
+            $fill($settings);
+        } catch (\Throwable $e) {
+            error_log('ADIF: couldn\'t show PHP\'s upload limits in the configuration dialog: ' . $e->getMessage());
+        }
+        return $settings;
+    }
+
     function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
         switch ($action) {
@@ -246,7 +279,9 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'success'] + $this->detectApiSchema(
                         $payload['url'] ?? '',
                         $this->apiKeyForDetection($payload),
-                        $payload['probePath'] ?? ''
+                        $payload['probePath'] ?? '',
+                        self::apiKeyPlacement($payload['keyLocation'] ?? null, $payload['keyName'] ?? null),
+                        self::apiSettingIsTrue($payload['responseTable'] ?? null)
                     );
                 } catch (\Throwable $e) {
                     return ['status' => 'error', 'message' => $e->getMessage()];
@@ -265,7 +300,7 @@ class ADIF extends AbstractExternalModule
 
                 $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
-                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                    return ['status' => 'error', 'message' => 'That run isn\'t in the module log any more. Reload the page.'];
                 }
                 if (trim((string) $run['record']) === '') {
                     return ['status' => 'error', 'message' => 'That run has no record on it, so there is nothing to re-run it for.'];
@@ -274,7 +309,10 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'error', 'message' => self::$recordNotInGroup];
                 }
 
-                return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
+                // A re-import (the Re-import button on a run that finished fine) runs the same way and is
+                // only logged differently
+                return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']), null,
+                    !empty($payload['reimport']));
 
             case 'import-unattempted':
                 // Runs the first import for a record listed under "Never imported" on the Imports page
@@ -343,7 +381,7 @@ class ADIF extends AbstractExternalModule
 
                 $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
-                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                    return ['status' => 'error', 'message' => 'That run isn\'t in the module log any more. Reload the page.'];
                 }
                 if (!$this->canSeeRecord($project_id, $run['record'])) {
                     return ['status' => 'error', 'message' => self::$recordNotInGroup];

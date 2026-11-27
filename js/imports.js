@@ -11,8 +11,8 @@
         return;
     }
 
-    const LABELS = { attention: 'Needs attention', dismissed: 'Dismissed', stale: 'From stored data', ok: 'OK' };
-    const PILL_CLASS = { attention: 'adif-status-error', dismissed: 'adif-status-none', stale: 'adif-status-stale', ok: 'adif-status-ok' };
+    const LABELS = { attention: 'Needs attention', dismissed: 'Dismissed', stale: 'From stored data', ok: 'OK', fixed: 'Fixed later', replaced: 'Stale' };
+    const PILL_CLASS = { attention: 'adif-status-error', dismissed: 'adif-status-none', stale: 'adif-status-stale', ok: 'adif-status-ok', fixed: 'adif-status-ok', replaced: 'adif-status-none' };
     const RUN_CLASS = { attention: 'is-attention', dismissed: 'is-dismissed', stale: 'is-stale' };
 
     function escapeHtml(value) {
@@ -91,8 +91,9 @@
         return $panel;
     }
 
-    function renderResult($details, response) {
+    function renderResult($details, response, reimport) {
         const $panel = resultPanel($details);
+        const what = reimport ? 'Re-import' : 'Retry';
 
         // The run's fields aren't mapped any more (see ImportStatus::importRetryMappingCheck): nothing
         // was run, and retrying again won't change that until the mappings do
@@ -104,7 +105,7 @@
 
         if (!response || response.status !== 'success') {
             $panel.html('<div class="adif-alert adif-alert-error">'
-                + multiline((response && response.message) || 'The retry failed.') + '</div>');
+                + multiline((response && response.message) || 'The ' + what.toLowerCase() + ' failed.') + '</div>');
             return;
         }
 
@@ -114,7 +115,7 @@
             : (outcome === 'stale' ? 'adif-alert-empty' : 'adif-imp-success');
 
         let html = '<div class="adif-alert ' + alertClass + '">'
-            + '<strong>Retry finished:</strong> ' + escapeHtml(LABELS[outcome])
+            + '<strong>' + what + ' finished:</strong> ' + escapeHtml(LABELS[outcome])
             + ' &middot; fields saved: ' + (run.saved ? multiline(run.saved) : 'none');
         if (run.not_populated) {
             html += '<br><strong>Not populated:</strong> ' + multiline(run.not_populated);
@@ -128,6 +129,12 @@
         html += '</div>';
         $panel.html(html);
 
+        // A re-import is a new run: the one it re-ran keeps its own outcome, and the button stays for
+        // another go. The new run is in the list once the page is reloaded.
+        if (reimport) {
+            return;
+        }
+
         // Bring the run's own pill up to date, and retire its buttons once nothing is waiting
         setOutcome($details, outcome);
         if (outcome !== 'attention') {
@@ -136,22 +143,23 @@
         }
     }
 
-    function retryRun(runId, $details, $button, bypassCache) {
+    function retryRun(runId, $details, $button, bypassCache, reimport) {
         const originalText = $button.text();
-        $button.prop('disabled', true).text('Retrying…');
+        const busyText = reimport ? 'Re-importing…' : 'Retrying…';
+        $button.prop('disabled', true).text(busyText);
 
-        return settings.module.ajax('retry-import', { run_id: runId, bypass_cache: bypassCache })
+        return settings.module.ajax('retry-import', { run_id: runId, bypass_cache: bypassCache, reimport: !!reimport })
             .then(function (response) {
-                renderResult($details, response || { status: 'error', message: 'No response from the server.' });
+                renderResult($details, response || { status: 'error', message: 'No response from the server.' }, reimport);
                 return response;
             })
             .catch(function (error) {
-                renderResult($details, { status: 'error', message: (error && error.message) || String(error) });
+                renderResult($details, { status: 'error', message: (error && error.message) || String(error) }, reimport);
                 return null;
             })
             .finally(function () {
-                // Only undo "Retrying…": renderResult may have retired the button ("Retried")
-                if ($button.text() === 'Retrying…') {
+                // Only undo the busy text: renderResult may have retired the button ("Retried")
+                if ($button.text() === busyText) {
                     $button.prop('disabled', false).text(originalText);
                 }
             });
@@ -179,6 +187,35 @@
             if (answer.confirmed) {
                 skipStoredData = answer.checked;
                 retryRun(runId, $details, $button, answer.checked);
+            }
+        });
+    });
+
+    // Re-import: a run that finished fine, imported again (same request as a retry; see retryImportRun's
+    // $reimport). For when a source changed, such as a replaced uploaded table.
+    $(document).on('click', '.adif-imp-reimport', function () {
+        const $button = $(this);
+        const runId = $button.attr('data-run-id');
+        if (!runId || $button.prop('disabled')) {
+            return;
+        }
+        const $details = $button.closest('.adif-imp-run');
+        const record = $.trim($details.find('.adif-imp-rec').first().text());
+        ask({
+            title: 'Re-import this record?',
+            message: 'Imports' + (record ? ' record ' + record : ' this record') + ' again, for the same event, instrument and'
+                + ' instance. Every field it maps is overwritten with what the sources return now, including'
+                + ' values that are already filled in.',
+            confirmLabel: 'Re-import',
+            checkbox: {
+                label: 'Skip stored data and call the APIs',
+                hint: 'Uploaded tables are always read fresh. This only affects API sources.',
+                checked: skipStoredData
+            }
+        }).then(function (answer) {
+            if (answer.confirmed) {
+                skipStoredData = answer.checked;
+                retryRun(runId, $details, $button, answer.checked, true);
             }
         });
     });

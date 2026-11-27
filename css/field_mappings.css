@@ -466,6 +466,22 @@
     color: inherit;
 }
 
+/* The lookup prompt's REDCap field picker (see attachLookupFieldPicker in pages/Mapping.php): the
+   field's label under its name, and a suggestion that hasn't been chosen yet */
+.adif-picker-option-label {
+    color: #5A6270;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.adif-picker-current.adif-picker-suggested {
+    color: #1F5F99;
+}
+
+.lookup-prompt-choices .adif-picker-trigger {
+    font-weight: normal;
+}
+
 .adif-picker-current {
     margin-left: auto;
     color: #1E6B3A;

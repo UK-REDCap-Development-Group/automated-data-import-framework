@@ -88,6 +88,14 @@ function adif_ds_storage_bar($usage, $after = '')
     return ob_get_clean();
 }
 
+// The Storage card at the top of both tabs, so they always look the same: the shared bar, then
+// $extra (HTML) for what only one tab says - the API tab's notes on cached responses
+function adif_ds_storage_card($usage, $after = '', $extra = '')
+{
+    return '<section class="adif-dt-card adif-ds-storage" aria-labelledby="adif-ds-storage-title">'
+        . '<h4 id="adif-ds-storage-title">Storage</h4>' . adif_ds_storage_bar($usage, $after) . $extra . '</section>';
+}
+
 $csrf = $module->getCSRFToken();
 
 // The tab is rendered first, since it handles its own form post: the counts in the tab links

@@ -67,7 +67,10 @@
         const payload = {
             url: url,
             probePath: String($form.find('.adif-ds-probe').val() || '').trim(),
-            apiKey: $form.find('.adif-ds-key-input, input[name="api_key"]').filter(function () { return !this.hidden; }).val() || ''
+            apiKey: $form.find('.adif-ds-key-input, input[name="api_key"]').filter(function () { return !this.hidden; }).val() || '',
+            keyLocation: $form.find('select[name="s[api-key-location]"]').val() || '',
+            keyName: String($form.find('input[name="s[api-key-name]"]').val() || '').trim(),
+            responseTable: $form.find('input[name="s[response-table]"]').is(':checked')
         };
         const index = $form.attr('data-index');
         const keyAction = $form.find('input[name="api_key_action"]:checked').val();

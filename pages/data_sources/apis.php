@@ -118,8 +118,9 @@ $tablesUrl = adif_ds_url($module, 'tables');
 
 // The sub-settings this tab lays out itself; any other sub-setting in config.json's "api-sources"
 // group is shown under "Other settings" with config.json's own label, so it can still be edited here
-$knownKeys = ['api', 'api-key', 'schema-probe', 'schema', 'cache-enabled', 'cache-mode', 'cache-max-age-days',
-    'cache-on-failure', 'cache-scope', 'data-version', 'lookups-are-public'];
+$knownKeys = ['api', 'api-key', 'api-key-location', 'api-key-name', 'schema-probe', 'schema', 'response-table',
+    'cache-enabled', 'cache-mode', 'cache-max-age-days', 'cache-on-failure', 'cache-scope', 'data-version',
+    'lookups-are-public'];
 
 // A sub-setting's value for the form: as posted when the form is being shown again, else as saved
 function adif_api_value($source, $form, $key)
@@ -287,10 +288,41 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                            placeholder="Only if this API needs one">
                 <?php endif; ?>
                 <?php if (!$readOnly): ?>
-                    <p class="adif-dt-hint">Sent as <code>Authorization: Bearer &lt;key&gt;</code>. It's stored with the
-                        project's module settings and never shown again once saved.</p>
+                    <p class="adif-dt-hint">ADIF adds the key to every request itself, where the API expects it (below), so
+                        it never goes in a URL or a path. It's stored with the project's module settings and never shown
+                        again once saved.</p>
                 <?php endif; ?>
             </div>
+            <?php $keyLocation = adif_api_value($source, $form, 'api-key-location'); ?>
+            <div class="adif-form-row">
+                <div class="adif-form-field">
+                    <label for="<?= $p ?>keyloc">Where the API expects the key</label>
+                    <?= adif_api_select($configs, 'api-key-location', $p . 'keyloc', $keyLocation) ?>
+                </div>
+                <?php // Only asked for when the key goes in a named header or query parameter (js/data_sources.js shows it on change) ?>
+                <div class="adif-form-field adif-ds-key-name"<?= in_array($keyLocation, ['header', 'query'], true) ? '' : ' hidden' ?>>
+                    <label for="<?= $p ?>keyname">Header or parameter name</label>
+                    <input type="text" name="s[api-key-name]" id="<?= $p ?>keyname" placeholder="key, X-API-Key, ..."
+                           value="<?= adif_h(adif_api_value($source, $form, 'api-key-name')) ?>">
+                </div>
+            </div>
+            <?php if (!$readOnly): ?>
+                <script>
+                    // Shows the name box only while the key goes in a named header or query parameter. Inline,
+                    // so it works however the page's script files are loaded or cached.
+                    (function () {
+                        var select = document.getElementById(<?= json_encode($p . 'keyloc') ?>);
+                        var box = select && select.closest('.adif-form-row').querySelector('.adif-ds-key-name');
+                        if (!box) return;
+                        var sync = function () { box.hidden = select.value !== 'header' && select.value !== 'query'; };
+                        select.addEventListener('change', sync);
+                        sync();
+                    })();
+                </script>
+            <?php endif; ?>
+            <p class="adif-dt-hint">Most APIs take a Bearer header. Some want a header of their own, or a query parameter:
+                the Census API, for one, takes <code>key=</code>. Left blank, the name is <code>X-API-Key</code> for a
+                header and <code>key</code> for a query parameter.</p>
         </fieldset>
 
         <fieldset class="adif-ds-section">
@@ -317,6 +349,13 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                     entries like <code>{"field": "data.value", "endpoint": "Tracts", "path": "?geoid=[geoid]"}</code>.
                     <strong>Detect schema</strong> reads it from an OpenAPI document, a Socrata dataset, or a sample response.</p>
             </div>
+            <label class="adif-dt-check">
+                <input type="checkbox" name="s[response-table]" value="1" <?= adif_api_checked($source, $form, 'response-table') ? 'checked' : '' ?>>
+                Responses are tables: a list of rows whose first row names the columns, as the Census API returns
+            </label>
+            <p class="adif-dt-hint">ADIF then reads each later row as a record named by those columns, so a value is
+                mapped as <code>[0].B19013_001E</code> instead of by position (<code>[1][7]</code>). Tick it before
+                <strong>Detect schema</strong>.</p>
         </fieldset>
 
         <fieldset class="adif-ds-section">
@@ -412,10 +451,7 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
     <div class="adif-alert adif-alert-empty"><?= adif_h($notice) ?></div>
 <?php endforeach; ?>
 
-<section class="adif-dt-card adif-ds-storage" aria-labelledby="adif-ds-storage-title">
-    <h4 id="adif-ds-storage-title">Storage</h4>
-    <?= adif_ds_storage_bar($module->projectStorageUsage(), 'Each source\'s cached responses are listed in its panel'
-        . ($canManage ? ', where they can be cleared to free space' : '') . '.') ?>
+<?php ob_start(); ?>
     <?php if ($cacheUsageError !== null): ?>
         <div class="adif-alert adif-alert-error">The cache's storage couldn't be read: <?= adif_h($cacheUsageError) ?></div>
     <?php else: ?>
@@ -445,7 +481,9 @@ function adif_api_form($module, $configs, $knownKeys, $csrf, $source, $form, $br
                 responses aren't used until a REDCap administrator turns it back on.</p>
         <?php endif; ?>
     <?php endif; ?>
-</section>
+<?php $storageExtra = ob_get_clean(); ?>
+<?= adif_ds_storage_card($module->projectStorageUsage(), 'Each source\'s cached responses are listed in its panel'
+    . ($canManage ? ', where they can be cleared to free space' : '') . '.', $storageExtra) ?>
 
 <?php if ($canManage): ?>
     <details class="adif-dt-card adif-ds-source adif-ds-new" id="adif-source-new" <?= empty($sources) || $focus === 'new' ? 'open' : '' ?>>

@@ -138,8 +138,8 @@ $queueOverdue = $queueOldest !== null && time() - $queueOldest > $module::$impor
 // The queue card lists this many; Run queued imports now still works through all of them
 $queueShownCap = 50;
 
-// Records with data whose mapped fields are empty and have never had an import tried - usually
-// entered before the module was enabled (see ImportStatus::importNeverAttempted)
+// Records with data and mapped fields that are empty and have never had an import tried - usually
+// entered before the module was enabled, or fields mapped since (see ImportStatus::importNeverAttempted)
 $neverImported = [];
 $neverImportedError = null;
 try {
@@ -207,10 +207,14 @@ $neverShownCap = 200;
 
 // The table: the runs with the chosen outcome, one page of them at a time. Each outcome's count is
 // shown on its filter tab.
-$outcomeCounts = array_count_values(array_column($allRuns, 'outcome'));
+// A flagged run that a later import fixed ('fixed') is listed and counted with the OK runs, and one a
+// later attempt replaced ('replaced', shown as Stale) only under All: neither is a filter of its own
+$outcomeCounts = array_count_values(array_map(fn($outcome) => $outcome === 'fixed' ? 'ok' : $outcome,
+    array_column($allRuns, 'outcome')));
 $runs = $allRuns;
 if ($statusFilter !== '') {
-    $runs = array_values(array_filter($runs, fn($run) => $run['outcome'] === $statusFilter));
+    $runs = array_values(array_filter($runs, fn($run) => $run['outcome'] === $statusFilter
+        || ($statusFilter === 'ok' && $run['outcome'] === 'fixed')));
 }
 $pageCount = max(1, (int) ceil(count($runs) / $perPage));
 $currentPage = min($pageParam, $pageCount);
@@ -284,7 +288,8 @@ function adif_imp_pill($outcome, $label)
         'attention' => 'adif-status-error',
         'dismissed' => 'adif-status-none',
         'stale' => 'adif-status-stale',
-        'ok' => 'adif-status-ok',
+        'ok', 'fixed' => 'adif-status-ok',
+        'replaced' => 'adif-status-none',
         default => 'adif-status-none',
     };
     return '<span class="adif-status-pill ' . $class . '">' . adif_imp_h($label) . '</span>';
@@ -330,6 +335,17 @@ function adif_imp_actions($run)
         . '<button type="button" class="btn btn-defaultrc btn-sm adif-imp-dismiss-btn" data-run-id="' . $runId . '"'
         . ' title="Stops flagging this run as needing attention, without changing any data. Can be undone.">Dismiss</button>'
         . '</span></div>';
+}
+
+// The Re-import button under a run that finished fine (OK, Fixed later, From stored data): fetches its
+// mapped fields again, e.g. after a source's data or an uploaded table was replaced.
+// js/imports.js builds the same markup.
+function adif_imp_reimport_action($run)
+{
+    return '<div class="adif-imp-retry-row"><button type="button" class="btn btn-defaultrc btn-sm adif-imp-reimport"'
+        . ' data-run-id="' . adif_imp_h($run['run_id']) . '"'
+        . ' title="Imports record ' . adif_imp_h($run['record']) . ' again, same event, instrument and instance,'
+        . ' overwriting its mapped fields">Re-import</button></div>';
 }
 
 // The instrument and instance column of the Never imported table: a repeating instrument and its
@@ -830,10 +846,26 @@ function adif_imp_instrument($run)
                             <?php elseif ($run['outcome'] === 'stale'): ?>
                                 <div class="adif-alert adif-alert-empty">Answered from stored data during an API outage; its fields
                                     were filled. <?= nl2br(adif_imp_h($run['notices'])) ?></div>
+                            <?php elseif ($run['outcome'] === 'fixed' && !empty($run['fixed_by'])): ?>
+                                <div class="adif-alert adif-imp-success adif-imp-status-note">Fixed by a later import: every field
+                                    this run left empty was saved by run <?= adif_imp_h($run['fixed_by']['run_id']) ?> on
+                                    <?= adif_imp_h(date('Y-m-d H:i', $run['fixed_by']['logged'])) ?><?= $run['fixed_by']['user'] !== ''
+                                        ? ' by ' . adif_imp_h($run['fixed_by']['user']) : '' ?>. It no longer needs attention. It left
+                                    empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                            <?php elseif ($run['outcome'] === 'replaced' && !empty($run['replaced_by'])): ?>
+                                <div class="adif-alert adif-alert-empty adif-imp-status-note">Stale: a later attempt, run
+                                    <?= adif_imp_h($run['replaced_by']['run_id']) ?> on
+                                    <?= adif_imp_h(date('Y-m-d H:i', $run['replaced_by']['logged'])) ?><?= $run['replaced_by']['user'] !== ''
+                                        ? ' by ' . adif_imp_h($run['replaced_by']['user']) : '' ?>, tried every field this run left empty
+                                    again. Any still empty are flagged on the latest attempt instead. This run left empty:
+                                    <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
                             <?php endif; ?>
 
                             <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
                                 <?= adif_imp_actions($run) ?>
+                            <?php elseif ($canRetry && in_array($run['outcome'], ['ok', 'fixed', 'stale'], true)
+                                && trim((string) $run['record']) !== ''): ?>
+                                <?= adif_imp_reimport_action($run) ?>
                             <?php endif; ?>
 
                             <?php if (!empty($run['request_logs'])): ?>
@@ -941,9 +973,9 @@ function adif_imp_instrument($run)
                     record<?= $neverRecordCount === 1 ? '' : 's' ?> with data but no import yet<?= $recordFilter !== ''
                         ? ' (record ' . adif_imp_h($recordFilter) . ' only)' : '' ?></span>
             </summary>
-            <p class="adif-imp-explain">These records have data in an event (or instance) where every mapped field is
-                still empty and no import has ever been tried &mdash; usually records entered before ADIF was enabled,
-                or before these fields were mapped. Imports run when a survey is submitted, so these won't fill on their
+            <p class="adif-imp-explain">These records have data in an event (or instance) with mapped fields that are
+                still empty and have never been imported &mdash; usually records entered before ADIF was enabled,
+                or fields mapped after a record&rsquo;s first import, which are imported on their own. Imports run when a survey is submitted, so these won't fill on their
                 own. Import them one at a time here, or all at once from <strong>Actions</strong>. An import started here
                 works like a survey's, and is logged and listed in the run table like any other run.</p>
             <?php if ($canRetry): ?>

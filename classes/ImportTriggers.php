@@ -96,11 +96,13 @@ trait ImportTriggers
             $needed = array_values(array_intersect($triggers['instruments'], $eventForms));
         }
 
+        // The record ID field is always requested: asked for only fields on a repeating instrument,
+        // REDCap can return the record's own row alone, with no row per instance
         $rows = json_decode(REDCap::getData([
             'project_id' => $projectId,
             'records' => [(string) $record],
             'events' => [(int) $eventId],
-            'fields' => array_map(fn($form) => "{$form}_complete", $needed),
+            'fields' => array_merge([(new \Project($projectId))->table_pk], array_map(fn($form) => "{$form}_complete", $needed)),
             'return_format' => 'json',
         ]), true);
         if (!is_array($rows)) {

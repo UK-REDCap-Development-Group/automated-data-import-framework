@@ -99,6 +99,8 @@ only flags runs where data is actually missing:
 |---|---|---|
 | **Needs attention** | A request errored (`outcome = error`) or saved nothing while leaving fields not populated - or the run's summary has errors (e.g. the final `saveData` failed) | Those fields are still empty. The import should be run again. |
 | **From stored data** | Every failing request was answered from the cache because the API was down (`outcome = stale`) and its fields were filled | Intended behaviour (`cache-on-failure: use_stale`). Noted, not flagged. |
+| **Stale** | A run that needed attention whose empty fields were all tried again by later imports at the same place (a retry that failed too, by anyone), without all being saved | The latest attempt carries the flag instead, so a failing import is flagged once. Listed under **All** only (`'replaced'` in the code; `replaced_by` names the latest attempt). |
+| **Fixed later** | A run that needed attention, every one of whose empty fields was saved by a later import at the same place (record, event and, for a repeating instrument or event, instance) | Solved by a retry or a later import. Counted and listed with **OK**, not a filter of its own; its details say which run fixed it (`ImportStatus::importApplyLaterFixes()`). A field typed in by hand doesn't count: dismiss the run instead. |
 | **OK** | Everything else | Includes requests whose fields were skipped because the API returned no value at a mapped path - that's an answer, not a failure. |
 
 A request that saved its fields never flags anything, whatever happened elsewhere in the run. A run
@@ -157,6 +159,13 @@ about the import engine is special-cased for retries.
   the API and overwrites what's stored - the right default after an outage. Unchecking **Skip
   stored data and call the APIs** reuses cached responses where they exist (e.g. for a retry of a
   run that failed only at `saveData`).
+- **Re-import:** runs that finished fine (OK, Fixed later, From stored data) have a **Re-import**
+  button instead. It sends the same `retry-import` action with `reimport: true` and runs the full plan
+  for the record, event, instrument and instance, overwriting every mapped field, including ones that
+  are already filled. Use it after a source changes, e.g. an uploaded table replaced with a corrected
+  file (tables are read fresh on every import, so the new file is used whatever the stored-data
+  choice). The run it re-ran keeps its outcome; the re-import is a new run, logged as
+  `API import: manual re-import by <username>`.
 - **Audit trail:** the retry is logged exactly like a survey-triggered run, as
   `API import: manual retry by <username>`, and appears in the run list like any other run. A
   successful retry also clears the record lookup's verdict.
@@ -214,11 +223,14 @@ instance of a mapped repeating instrument, which is a place of its own. It lists
 - **the record has data there.** The record has a row for that event or instance with a value in it,
   so the event has happened. Events a record hasn't reached are left alone, as a survey trigger
   would leave them.
-- **every field the current mappings import there is empty.** For a checkbox, no option is ticked.
-- **no logged run has requested any of those fields there.** This is read from every import run's
-  per-request `fields_requested`, however old. A run that made no requests, or that doesn't say which
-  fields it requested, counts as having tried everything in its event. One attempt is enough to leave
-  a place off the list: if that attempt left fields empty, the run list flags it.
+- **at least one field the current mappings import there is still waiting on a first import**: it's
+  empty (for a checkbox, no option is ticked) and no logged run has requested it there. Fields are
+  judged one by one, so a place that was imported before a new field was mapped is listed again, for
+  the new field alone (`importUnitPendingFields()`). Requests come from every import run's per-request
+  `fields_requested`, however old. A run that made no requests, or that doesn't say which fields it
+  requested, counts as having tried everything at its place: its whole event, or for a run of one
+  instance of a repeating instrument, just that instance. One attempt is enough to leave a field off
+  the list: if that attempt left it empty, the run list flags it.
 
 All of this comes from one `REDCap::getData()` call (the mapped fields, their lookup fields and the
 instruments' form status fields) and one query on the module log. The record filter narrows both to
@@ -240,8 +252,10 @@ for a cron instead (see "Import all" below). Either way, each import goes throug
 - **Re-check first:** the place is looked up again for that one record. If it has been imported since
   the page loaded (another tab, Import all, a survey), or its fields have values now, nothing runs
   and the row says so. This also means only places the detection would list can be imported.
-- **The import:** `Import::importMappedData()` with the place's plan (`importUnitPlan()`: for a
-  repeating instrument, only that instrument's fields). It reads stored data as the project's cache
+- **The import:** `Import::importMappedData()` with the place's plan narrowed to its pending fields
+  (`importPendingPlan()`, built on `importUnitPlan()`: for a repeating instrument, only that
+  instrument's fields). Only the requests for those fields are made, so a newly mapped field is
+  imported without calling the place's other sources again or overwriting their values. It reads stored data as the project's cache
   settings allow, as a survey submission's import would, rather than bypassing the cache.
 - **Audit trail:** logged like any run, as `API import: manual import by <username>` (or, from
   Import all, `API import: import all, requested by <username>`), so it joins the run list. A failure

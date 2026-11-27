@@ -4,9 +4,12 @@ namespace UKModules\ADIF;
 
 use REDCap;
 
+require_once __DIR__ . '/DataTableFormats.php';
+
 // Mixed into UKModules\ADIF\ADIF alongside Proxy. Lets a project upload a CSV (or another delimited
-// text file) and use it as a data source, managed on the Data Sources page
-// (pages/data_sources/tables.php).
+// text file), a JSON file or an Excel workbook and use it as a data source, managed on the Data Sources
+// page (pages/data_sources/tables.php). JSON and workbooks are converted to CSV on upload (see
+// DataTableFormats), and each sheet of a workbook becomes its own table.
 //
 // A table answers requests the way a Socrata dataset does, so everything built for API sources works
 // on it unchanged: its source id ("table:<id>") goes wherever an API source's index does, its fields
@@ -15,8 +18,8 @@ use REDCap;
 // of matching rows as objects keyed by column name, so mapping paths such as [0].column or
 // [measure=X].value read it like any JSON response.
 //
-// The uploaded file is kept as a REDCap edoc (converted to UTF-8 first) and read on each import.
-// Its settings are kept in the "data-tables" project setting, keyed by table id:
+// The uploaded file is kept as a REDCap edoc (converted to UTF-8 first, and from JSON or Excel to CSV)
+// and read on each import. Its settings are kept in the "data-tables" project setting, keyed by table id:
 //   name           - shown on the Mapping page as "Table: <name>"; fixed once uploaded, since saved
 //                    mappings are matched by it
 //   key_column     - the column rows are looked up by
@@ -24,8 +27,12 @@ use REDCap;
 //   loose_match    - compare ignoring case, surrounding spaces and leading zeros
 //   layout         - "wide" (one row per key) or "long" (several rows per key, told apart by
 //                    measure_column, whose distinct values are kept in measure_values)
+//   format         - what was uploaded: "delimited" (also when missing, for tables from before), "json"
+//                    or "xlsx"; sheet is the workbook sheet an "xlsx" table was read from
 trait DataTables
 {
+    use DataTableFormats;
+
     private static $dataTableSourcePrefix = 'table:';
     private static $dataTableExtensions = ['csv', 'tsv', 'tab', 'txt'];
     private static $dataTableDelimiters = [',', "\t", ';', '|'];
@@ -106,6 +113,107 @@ trait DataTables
             }
         }
         return min($limits);
+    }
+
+    // Why the largest upload is smaller than ADIF's per-file setting, when it is: a list of plain-text
+    // reasons, empty when the setting is what applies. PHP's upload_max_filesize and post_max_size cap
+    // it silently otherwise (see maxDataTableUploadBytes), and so does the project's storage limit,
+    // since no one file can be larger than the whole allowance.
+    public function dataTableUploadLimitReasons()
+    {
+        $setting = $this->dataTableFileLimitBytes();
+        $size = fn($b) => $this->formatDataTableBytes($b);
+        $reasons = [];
+
+        $capped = [];
+        foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+            $raw = trim((string) ini_get($name));
+            $bytes = $this->iniBytes($raw);
+            if ($bytes > 0 && $bytes < $setting) {
+                $capped[] = "$name = $raw";
+            }
+        }
+        if (!empty($capped)) {
+            $reasons[] = 'ADIF\'s setting allows files up to ' . $size($setting) . ', but this server\'s PHP accepts at most '
+                . $size($this->maxDataTableUploadBytes()) . ' (' . implode(', ', $capped) . '). A server administrator can '
+                . 'raise upload_max_filesize and post_max_size in php.ini (post_max_size a little above the other, since '
+                . 'it covers the whole upload), then restart PHP or the web server.';
+        }
+
+        $project = $this->dataTableProjectLimitBytes();
+        if ($project < $setting) {
+            $reasons[] = 'No file can be larger than the project\'s total storage limit of ' . $size($project)
+                . ', which is below the per-file setting (' . $size($setting) . '). A REDCap administrator can raise it '
+                . 'in the module\'s system settings.';
+        }
+        return $reasons;
+    }
+
+    // The Control Center configuration dialog's read-only panel on PHP's upload limits (the
+    // "adif-php-upload-limits" setting; see ADIF::redcap_module_configuration_settings). They can't be
+    // changed from REDCap, but they cap the data table settings under them, so they're shown with the
+    // php.ini files they come from and what they mean for uploads now.
+    public function phpUploadLimitsHtml()
+    {
+        $h = fn($text) => htmlspecialchars((string) $text, ENT_QUOTES);
+        $size = fn($b) => $this->formatDataTableBytes($b);
+        $row = function ($name, $what, $asBytes = true) use ($h, $size) {
+            $raw = trim((string) ini_get($name));
+            $bytes = $this->iniBytes($raw);
+            $shown = $raw === '' ? 'not set' : ($raw === '-1' || ($asBytes && $bytes <= 0) ? "$raw (no limit)"
+                : ($asBytes && $raw !== $size($bytes) ? "$raw (" . $size($bytes) . ')' : $raw));
+            return '<tr><td style="padding: 1px 14px 1px 0;"><code>' . $h($name) . '</code></td>'
+                . '<td style="padding: 1px 14px 1px 0;"><b>' . $h($shown) . '</b></td>'
+                . '<td style="padding: 1px 0; color: #555;">' . $h($what) . '</td></tr>';
+        };
+
+        // Shown in the dialog's label, so block elements are spans set to display: block
+        $html = '<span style="display: block; background: #f7f7f7; border: 1px solid #e2e2e2; border-radius: 4px; '
+            . 'padding: 6px 10px; margin-top: 4px;">'
+            . '<b>PHP upload limits on this server</b> <span style="color: #555;">(set in PHP\'s configuration, not '
+            . 'here; the sizes below can\'t go past them)</span>'
+            . '<table style="margin: 4px 0; font-size: 95%;">'
+            . $row('upload_max_filesize', 'largest single file')
+            . $row('post_max_size', 'largest upload, all files together')
+            . $row('max_file_uploads', 'files per upload', false)
+            . $row('memory_limit', 'keep well above the largest table: imports read a whole table into memory')
+            . '</table>';
+
+        $html .= 'Projects can upload files up to <b>' . $h($size($this->maxDataTableUploadBytes())) . '</b> now.';
+        foreach ($this->dataTableUploadLimitReasons() as $reason) {
+            $html .= '<span class="text-danger" style="display: block; margin-top: 4px;">' . $h($reason) . '</span>';
+        }
+
+        // Which file sets each limit (the last one read wins), and where a new one would go
+        $loaded = php_ini_loaded_file();
+        $scanned = array_filter(array_map('trim', explode(',', (string) php_ini_scanned_files())));
+        $setBy = [];
+        foreach (array_merge($loaded ? [$loaded] : [], $scanned) as $file) {
+            $values = @parse_ini_file($file, false, INI_SCANNER_RAW);
+            foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+                if (is_array($values) && array_key_exists($name, $values)) {
+                    $setBy[$name] = [$file, trim((string) $values[$name])];
+                }
+            }
+        }
+        $sources = [];
+        foreach (['upload_max_filesize', 'post_max_size'] as $name) {
+            if (!isset($setBy[$name])) {
+                $sources[] = "<code>$name</code> is set by no php.ini file, so it's PHP's built-in default";
+                continue;
+            }
+            [$file, $value] = $setBy[$name];
+            $sources[] = "<code>$name</code> is set in <code>" . $h($file) . '</code>'
+                // The web server or a PHP-FPM pool (php_admin_value) can override what the files say
+                . ($this->iniBytes($value) !== $this->iniBytes(ini_get($name)) ? ' (to ' . $h($value) . ', but something '
+                    . 'later overrides it: look in the web server\'s or PHP-FPM pool\'s configuration)' : '');
+        }
+        $scanDirectory = !empty($scanned) ? dirname(reset($scanned)) : '';
+        $html .= '<span style="display: block; margin-top: 4px; font-size: 90%; color: #555;">' . implode('; ', $sources) . '. '
+            . ($scanDirectory !== '' ? 'To change them, edit that file or add one ending in <code>.ini</code> to <code>'
+                . $h($scanDirectory) . '</code>, then' : 'After changing them,')
+            . ' restart PHP (or the web server, or its Docker container).</span></span>';
+        return $html;
     }
 
     // The per-file limit set by an administrator ("adif-table-max-file-mb"), else 8 MB
@@ -226,56 +334,79 @@ trait DataTables
     // ---- Adding, changing and removing tables ----
     // Each returns ['table' => <settings>, 'notices' => [things the user should know]].
 
-    public function addDataTable($upload, $name)
+    // Adds the tables an uploaded file holds: one, or one per sheet of an Excel workbook. Returns
+    // ['tables' => [<settings>, ...], 'notices' => [...]]. Nothing is added unless all of them can be.
+    public function addDataTables($upload, $name)
     {
-        $file = $this->acceptDataTableUpload($upload);
-        $this->checkDataTableProjectLimit($file['bytes']);
+        $read = $this->readDataTableUpload($upload);
+        $files = $read['files'];
+        $notices = $read['notices'];
+        $this->checkDataTableProjectLimit(array_sum(array_column($files, 'bytes')));
 
         $name = trim(preg_replace('/\s+/', ' ', (string) $name));
         if ($name === '') {
-            $name = trim(preg_replace('/[_\s]+/', ' ', pathinfo($file['filename'], PATHINFO_FILENAME)));
+            $name = trim(preg_replace('/[_\s]+/', ' ', pathinfo($read['filename'], PATHINFO_FILENAME)));
         }
+
         if (mb_strlen($name) > 100) {
             throw new \Exception('Please give the table a name of 100 characters or fewer.');
         }
 
+        // Every name is checked before anything is stored. With several sheets, each table is
+        // "<name> - <sheet>" (sheet names are at most 31 characters, so the name is shortened to fit).
         $tables = $this->getDataTables();
-        foreach ($tables as $existing) {
-            if (strcasecmp($existing['name'], $name) === 0) {
-                throw new \Exception("There's already a table named \"$name\". Choose another name, or use "
-                    . "Replace file on that table to update its data.");
+        $taken = array_map('mb_strtolower', array_column($tables, 'name'));
+        $names = [];
+        foreach ($files as $i => $file) {
+            $tableName = count($files) === 1 ? $name
+                : rtrim(mb_substr($name, 0, max(1, 97 - mb_strlen($file['sheet'])))) . ' - ' . $file['sheet'];
+            if (in_array(mb_strtolower($tableName), $taken, true)) {
+                throw new \Exception("There's already a table named \"$tableName\". Choose another name, or use "
+                    . 'Replace file on that table to update its data.');
+            }
+            $taken[] = mb_strtolower($tableName);
+            $names[$i] = $tableName;
+        }
+
+        $added = [];
+        foreach ($files as $i => $file) {
+            $tableName = $names[$i];
+            do {
+                $id = bin2hex(random_bytes(4));
+            } while (isset($tables[$id]));
+
+            $columns = $file['inspection']['columns'];
+            $key = $this->suggestDataTableKey($columns);
+            $table = [
+                'id' => $id,
+                'name' => $tableName,
+                'edoc_id' => $this->storeDataTableFile($file),
+                'filename' => $file['filename'],
+                'format' => $file['format'],
+                'sheet' => $file['sheet'],
+                'bytes' => $file['bytes'],
+                'delimiter' => $file['delimiter'],
+                'columns' => $columns,
+                'row_count' => $file['inspection']['row_count'],
+                'key_column' => $key,
+                'placeholder' => $this->placeholderName($key),
+                'loose_match' => true,
+                'layout' => 'wide',
+                'measure_column' => '',
+                'measure_values' => [],
+                'uploaded_by' => $this->currentUsername(),
+                'uploaded_at' => date('Y-m-d H:i'),
+            ];
+            $tables[$id] = $table;
+            $added[] = $table;
+            foreach ($file['inspection']['warnings'] as $warning) {
+                $notices[] = (count($files) > 1 ? "Sheet \"{$file['sheet']}\": " : '') . $warning;
             }
         }
 
-        do {
-            $id = bin2hex(random_bytes(4));
-        } while (isset($tables[$id]));
-
-        $columns = $file['inspection']['columns'];
-        $key = $this->suggestDataTableKey($columns);
-        $table = [
-            'id' => $id,
-            'name' => $name,
-            'edoc_id' => $this->storeDataTableFile($file),
-            'filename' => $file['filename'],
-            'bytes' => $file['bytes'],
-            'delimiter' => $file['delimiter'],
-            'columns' => $columns,
-            'row_count' => $file['inspection']['row_count'],
-            'key_column' => $key,
-            'placeholder' => $this->placeholderName($key),
-            'loose_match' => true,
-            'layout' => 'wide',
-            'measure_column' => '',
-            'measure_values' => [],
-            'uploaded_by' => $this->currentUsername(),
-            'uploaded_at' => date('Y-m-d H:i'),
-        ];
-
-        $tables[$id] = $table;
         $this->saveDataTables($tables);
 
-        return ['table' => $table, 'notices' => $file['inspection']['warnings']];
+        return ['tables' => $added, 'notices' => $notices];
     }
 
     // Swaps in a new version of a table's file (e.g. next year's release), keeping its name, so
@@ -283,9 +414,10 @@ trait DataTables
     public function replaceDataTableFile($id, $upload)
     {
         $table = $this->getDataTable($id);
-        $file = $this->acceptDataTableUpload($upload);
+        $read = $this->readDataTableUpload($upload);
+        $file = $this->pickReplacementSheet($table, $read['files']);
         $this->checkDataTableProjectLimit($file['bytes'], $id);
-        $notices = $file['inspection']['warnings'];
+        $notices = array_merge($read['notices'], $file['inspection']['warnings']);
         $columns = $file['inspection']['columns'];
 
         $missing = array_values(array_diff($table['columns'], $columns));
@@ -297,6 +429,8 @@ trait DataTables
         $oldEdoc = $table['edoc_id'];
         $table['edoc_id'] = $this->storeDataTableFile($file);
         $table['filename'] = $file['filename'];
+        $table['format'] = $file['format'];
+        $table['sheet'] = $file['sheet'];
         $table['bytes'] = $file['bytes'];
         $table['delimiter'] = $file['delimiter'];
         $table['columns'] = $columns;
@@ -327,6 +461,25 @@ trait DataTables
         $this->deleteDataTableEdoc($oldEdoc);
 
         return ['table' => $table, 'notices' => $notices];
+    }
+
+    // Which of a workbook's sheets replaces a table: the one with the same name as the sheet it was read
+    // from, else the only one. A CSV or JSON file has just the one.
+    private function pickReplacementSheet($table, $files)
+    {
+        if (count($files) === 1) {
+            return $files[0];
+        }
+        $previous = (string) ($table['sheet'] ?? '');
+        foreach ($files as $file) {
+            if ($previous !== '' && strcasecmp($file['sheet'], $previous) === 0) {
+                return $file;
+            }
+        }
+        $names = '"' . implode('", "', array_column($files, 'sheet')) . '"';
+        throw new \Exception('This workbook has several sheets (' . $names . ')' . ($previous !== ''
+            ? ", and none is named \"$previous\" like the sheet this table was read from" : '')
+            . '. Rename the sheet to use, or save it as its own workbook or as CSV, and upload that.');
     }
 
     public function updateDataTableSettings($id, $input)
@@ -422,6 +575,27 @@ trait DataTables
     // ---- Fields and requests, used by Proxy ----
 
     // Every table's fields, in the form Proxy::getApiFields() returns
+    // [table id => [field => form]]: the mapped fields that read from each uploaded table, for its card
+    // on the Data Sources page (ApiSources::apiSourceMappedFields does the same for API sources)
+    public function dataTableMappedFields()
+    {
+        $apiFields = $this->getApiFields();
+        $byTable = [];
+        foreach ($this->getProjectSetting('field-mappings') ?: [] as $form => $fields) {
+            foreach ((array) $fields as $field => $config) {
+                $path = $config['mapping'] ?? '';
+                if ($path === '') {
+                    continue;
+                }
+                $apiField = $this->findApiField($apiFields, $path, $config['endpoint'] ?? null);
+                if ($apiField !== null && $this->isDataTableSource($apiField['source'])) {
+                    $byTable[$this->dataTableIdFromSource($apiField['source'])][$field] = $form;
+                }
+            }
+        }
+        return $byTable;
+    }
+
     public function getDataTableFields()
     {
         $fields = [];
@@ -690,9 +864,11 @@ trait DataTables
         return $columns;
     }
 
-    // Checks an upload from $_FILES and reads it. Returns ['filename', 'bytes', 'contents' (UTF-8),
-    // 'delimiter', 'inspection' => ['columns', 'row_count', 'warnings']].
-    private function acceptDataTableUpload($upload)
+    // Checks an upload from $_FILES and reads it. Returns ['filename', 'files' => [one per table:
+    // ['filename', 'format', 'sheet', 'bytes', 'contents' (UTF-8 delimited text), 'delimiter',
+    // 'inspection' => ['columns', 'row_count', 'warnings']]], 'notices' => [about the file as a whole]].
+    // A workbook gives one entry per sheet that reads as a table; its other sheets are named in a notice.
+    private function readDataTableUpload($upload)
     {
         if (!is_array($upload) || !isset($upload['error'])) {
             throw new \Exception('Choose a file to upload.');
@@ -718,13 +894,52 @@ trait DataTables
 
         $filename = basename((string) $upload['name']);
         $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-        if (!in_array($extension, self::$dataTableExtensions, true)) {
-            throw new \Exception('Upload a CSV or another delimited text file (.' . implode(', .', self::$dataTableExtensions)
-                . '). A spreadsheet can be saved as CSV from Excel with File > Save As.');
+        $format = $this->dataTableFormat($extension);
+        if ($format === null) {
+            throw new \Exception($extension === 'xls'
+                ? 'Older Excel workbooks (.xls) can\'t be read. Open it in Excel and save it as .xlsx or CSV.'
+                : 'Upload a CSV or another delimited text file (.' . implode(', .', self::$dataTableExtensions) . '), a JSON '
+                    . 'file (.' . implode(', .', self::$dataTableJsonExtensions) . ') or an Excel workbook (.xlsx).');
         }
         if ($upload['size'] > $this->maxDataTableUploadBytes()) {
             throw new \Exception("Data table files can be up to $maxMb MB, and this one is "
                 . $this->formatDataTableBytes((int) $upload['size']) . '.');
+        }
+        // What's stored for a JSON file or a sheet, once converted to CSV, can be larger than what was
+        // uploaded; it's held to the module's per-file limit too
+        $storedLimit = $this->dataTableFileLimitBytes();
+
+        $entry = ['filename' => $filename, 'format' => $format, 'sheet' => ''];
+        $notices = [];
+
+        if ($format === 'xlsx') {
+            $files = [];
+            $skipped = [];
+            $lastProblem = '';
+            $workbook = $this->convertXlsxDataTable($upload['tmp_name'], $storedLimit);
+            $notices = $workbook['notices'];
+            foreach ($workbook['sheets'] as $sheet) {
+                try {
+                    if ($sheet['problem'] !== null) {
+                        throw new \Exception($sheet['problem']);
+                    }
+                    $files[] = $this->delimitedDataTableEntry(['sheet' => $sheet['sheet']] + $entry, $sheet['csv'], ',',
+                        $sheet['warnings']);
+                } catch (\Throwable $e) {
+                    $lastProblem = $e->getMessage();
+                    $skipped[] = "\"{$sheet['sheet']}\" (" . rtrim($lastProblem, '.') . ')';
+                }
+            }
+            if (empty($files) && count($workbook['sheets']) === 1) {
+                throw new \Exception($workbook['sheets'][0]['problem'] ?? $lastProblem);
+            }
+            if (empty($files)) {
+                throw new \Exception('No sheet in the workbook could be read as a table: ' . implode('; ', $skipped) . '.');
+            }
+            if (!empty($skipped)) {
+                $notices[] = 'These sheets weren\'t read as tables: ' . implode('; ', $skipped) . '.';
+            }
+            return ['filename' => $filename, 'files' => $files, 'notices' => $notices];
         }
 
         $contents = file_get_contents($upload['tmp_name']);
@@ -737,14 +952,25 @@ trait DataTables
         if (!mb_check_encoding($contents, 'UTF-8')) {
             $contents = mb_convert_encoding($contents, 'UTF-8', 'Windows-1252');
         }
+
+        if ($format === 'json') {
+            $converted = $this->convertJsonDataTable($contents, $storedLimit);
+            $file = $this->delimitedDataTableEntry($entry, $converted['csv'], ',', $converted['warnings']);
+            return ['filename' => $filename, 'files' => [$file], 'notices' => []];
+        }
+
         // Old Mac line endings
         $contents = preg_replace('/\r(?!\n)/', "\n", $contents);
+        $file = $this->delimitedDataTableEntry($entry, $contents, $this->detectDelimiter($contents, $extension));
+        return ['filename' => $filename, 'files' => [$file], 'notices' => []];
+    }
 
-        $delimiter = $this->detectDelimiter($contents, $extension);
-        $inspection = $this->inspectDelimitedContents($contents, $delimiter);
-
-        return [
-            'filename' => $filename,
+    // An entry of readDataTableUpload(), for delimited text read with $delimiter
+    private function delimitedDataTableEntry(array $entry, $contents, $delimiter, array $warnings = [])
+    {
+        $inspection = $this->inspectDelimitedContents($contents, $delimiter, $entry['format'] !== 'delimited');
+        $inspection['warnings'] = array_merge($warnings, $inspection['warnings']);
+        return $entry + [
             'bytes' => strlen($contents),
             'contents' => $contents,
             'delimiter' => $delimiter,
@@ -770,7 +996,8 @@ trait DataTables
         return $best;
     }
 
-    private function inspectDelimitedContents($contents, $delimiter)
+    // $converted: the contents came from JSON or a workbook, so a single column isn't a separator problem
+    private function inspectDelimitedContents($contents, $delimiter, $converted = false)
     {
         $rowCount = 0;
         $raggedRows = 0;
@@ -783,7 +1010,11 @@ trait DataTables
         });
 
         if ($rowCount === 0) {
-            throw new \Exception('The file has a header row but no data rows.');
+            throw new \Exception($converted ? 'Only the row naming the columns was found, with no data rows under it.'
+                : 'The file has a header row but no data rows.');
+        }
+        if (count($columns) < 2 && $converted) {
+            throw new \Exception('Only one column was found. A table needs a column to look rows up by and at least one more.');
         }
         if (count($columns) < 2) {
             throw new \Exception('Only one column was found. Check that the file is comma, tab, semicolon or pipe separated, '
@@ -821,7 +1052,8 @@ trait DataTables
 
     // ---- Storage ----
 
-    // Saves the (UTF-8) contents as an edoc under its original file name and returns the edoc id
+    // Saves the (UTF-8) contents as an edoc under its original file name (as .csv for a converted file)
+    // and returns the edoc id
     private function storeDataTableFile($file)
     {
         $tempRoot = defined('APP_PATH_TEMP') ? APP_PATH_TEMP : sys_get_temp_dir();
@@ -830,7 +1062,10 @@ trait DataTables
             throw new \Exception('The file could not be saved: the server\'s temp folder isn\'t writable.');
         }
 
-        $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_', $file['filename']);
+        // A JSON file or a workbook's sheet is stored as the CSV it was converted to
+        $storedName = ($file['format'] ?? 'delimited') === 'delimited' ? $file['filename']
+            : pathinfo($file['filename'], PATHINFO_FILENAME) . ($file['sheet'] !== '' ? ' - ' . $file['sheet'] : '') . '.csv';
+        $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_', $storedName);
         $path = $directory . DIRECTORY_SEPARATOR . $safeName;
         try {
             if (file_put_contents($path, $file['contents']) === false) {
