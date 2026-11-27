@@ -207,8 +207,8 @@ $neverShownCap = 200;
 
 // The table: the runs with the chosen outcome, one page of them at a time. Each outcome's count is
 // shown on its filter tab.
-// A flagged run that a later import fixed ('fixed') is listed and counted with the OK runs: it isn't
-// a filter of its own
+// A flagged run that a later import fixed ('fixed') is listed and counted with the OK runs, and one a
+// later attempt replaced ('replaced', shown as Stale) only under All: neither is a filter of its own
 $outcomeCounts = array_count_values(array_map(fn($outcome) => $outcome === 'fixed' ? 'ok' : $outcome,
     array_column($allRuns, 'outcome')));
 $runs = $allRuns;
@@ -289,6 +289,7 @@ function adif_imp_pill($outcome, $label)
         'dismissed' => 'adif-status-none',
         'stale' => 'adif-status-stale',
         'ok', 'fixed' => 'adif-status-ok',
+        'replaced' => 'adif-status-none',
         default => 'adif-status-none',
     };
     return '<span class="adif-status-pill ' . $class . '">' . adif_imp_h($label) . '</span>';
@@ -334,6 +335,17 @@ function adif_imp_actions($run)
         . '<button type="button" class="btn btn-defaultrc btn-sm adif-imp-dismiss-btn" data-run-id="' . $runId . '"'
         . ' title="Stops flagging this run as needing attention, without changing any data. Can be undone.">Dismiss</button>'
         . '</span></div>';
+}
+
+// The Re-import button under a run that finished fine (OK, Fixed later, From stored data): fetches its
+// mapped fields again, e.g. after a source's data or an uploaded table was replaced.
+// js/imports.js builds the same markup.
+function adif_imp_reimport_action($run)
+{
+    return '<div class="adif-imp-retry-row"><button type="button" class="btn btn-defaultrc btn-sm adif-imp-reimport"'
+        . ' data-run-id="' . adif_imp_h($run['run_id']) . '"'
+        . ' title="Imports record ' . adif_imp_h($run['record']) . ' again, same event, instrument and instance,'
+        . ' overwriting its mapped fields">Re-import</button></div>';
 }
 
 // The instrument and instance column of the Never imported table: a repeating instrument and its
@@ -840,10 +852,20 @@ function adif_imp_instrument($run)
                                     <?= adif_imp_h(date('Y-m-d H:i', $run['fixed_by']['logged'])) ?><?= $run['fixed_by']['user'] !== ''
                                         ? ' by ' . adif_imp_h($run['fixed_by']['user']) : '' ?>. It no longer needs attention. It left
                                     empty: <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
+                            <?php elseif ($run['outcome'] === 'replaced' && !empty($run['replaced_by'])): ?>
+                                <div class="adif-alert adif-alert-empty adif-imp-status-note">Stale: a later attempt, run
+                                    <?= adif_imp_h($run['replaced_by']['run_id']) ?> on
+                                    <?= adif_imp_h(date('Y-m-d H:i', $run['replaced_by']['logged'])) ?><?= $run['replaced_by']['user'] !== ''
+                                        ? ' by ' . adif_imp_h($run['replaced_by']['user']) : '' ?>, tried every field this run left empty
+                                    again. Any still empty are flagged on the latest attempt instead. This run left empty:
+                                    <?= nl2br(adif_imp_h($run['explanation'] ?? '')) ?></div>
                             <?php endif; ?>
 
                             <?php if ($canRetry && in_array($run['outcome'], ['attention', 'dismissed'], true)): ?>
                                 <?= adif_imp_actions($run) ?>
+                            <?php elseif ($canRetry && in_array($run['outcome'], ['ok', 'fixed', 'stale'], true)
+                                && trim((string) $run['record']) !== ''): ?>
+                                <?= adif_imp_reimport_action($run) ?>
                             <?php endif; ?>
 
                             <?php if (!empty($run['request_logs'])): ?>

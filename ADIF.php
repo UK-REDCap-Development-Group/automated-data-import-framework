@@ -300,7 +300,7 @@ class ADIF extends AbstractExternalModule
 
                 $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
-                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                    return ['status' => 'error', 'message' => 'That run isn\'t in the module log any more. Reload the page.'];
                 }
                 if (trim((string) $run['record']) === '') {
                     return ['status' => 'error', 'message' => 'That run has no record on it, so there is nothing to re-run it for.'];
@@ -309,7 +309,10 @@ class ADIF extends AbstractExternalModule
                     return ['status' => 'error', 'message' => self::$recordNotInGroup];
                 }
 
-                return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']));
+                // A re-import (the Re-import button on a run that finished fine) runs the same way and is
+                // only logged differently
+                return $this->retryImportRun($project_id, $run, !empty($payload['bypass_cache']), null,
+                    !empty($payload['reimport']));
 
             case 'import-unattempted':
                 // Runs the first import for a record listed under "Never imported" on the Imports page
@@ -378,7 +381,7 @@ class ADIF extends AbstractExternalModule
 
                 $run = $this->importRunFromLog($project_id, $payload['run_id']);
                 if ($run === null) {
-                    return ['status' => 'error', 'message' => 'That run is no longer among the most recent 500 imports. Reload the page.'];
+                    return ['status' => 'error', 'message' => 'That run isn\'t in the module log any more. Reload the page.'];
                 }
                 if (!$this->canSeeRecord($project_id, $run['record'])) {
                     return ['status' => 'error', 'message' => self::$recordNotInGroup];

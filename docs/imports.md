@@ -99,6 +99,7 @@ only flags runs where data is actually missing:
 |---|---|---|
 | **Needs attention** | A request errored (`outcome = error`) or saved nothing while leaving fields not populated - or the run's summary has errors (e.g. the final `saveData` failed) | Those fields are still empty. The import should be run again. |
 | **From stored data** | Every failing request was answered from the cache because the API was down (`outcome = stale`) and its fields were filled | Intended behaviour (`cache-on-failure: use_stale`). Noted, not flagged. |
+| **Stale** | A run that needed attention whose empty fields were all tried again by later imports at the same place (a retry that failed too, by anyone), without all being saved | The latest attempt carries the flag instead, so a failing import is flagged once. Listed under **All** only (`'replaced'` in the code; `replaced_by` names the latest attempt). |
 | **Fixed later** | A run that needed attention, every one of whose empty fields was saved by a later import at the same place (record, event and, for a repeating instrument or event, instance) | Solved by a retry or a later import. Counted and listed with **OK**, not a filter of its own; its details say which run fixed it (`ImportStatus::importApplyLaterFixes()`). A field typed in by hand doesn't count: dismiss the run instead. |
 | **OK** | Everything else | Includes requests whose fields were skipped because the API returned no value at a mapped path - that's an answer, not a failure. |
 
@@ -158,6 +159,13 @@ about the import engine is special-cased for retries.
   the API and overwrites what's stored - the right default after an outage. Unchecking **Skip
   stored data and call the APIs** reuses cached responses where they exist (e.g. for a retry of a
   run that failed only at `saveData`).
+- **Re-import:** runs that finished fine (OK, Fixed later, From stored data) have a **Re-import**
+  button instead. It sends the same `retry-import` action with `reimport: true` and runs the full plan
+  for the record, event, instrument and instance, overwriting every mapped field, including ones that
+  are already filled. Use it after a source changes, e.g. an uploaded table replaced with a corrected
+  file (tables are read fresh on every import, so the new file is used whatever the stored-data
+  choice). The run it re-ran keeps its outcome; the re-import is a new run, logged as
+  `API import: manual re-import by <username>`.
 - **Audit trail:** the retry is logged exactly like a survey-triggered run, as
   `API import: manual retry by <username>`, and appears in the run list like any other run. A
   successful retry also clears the record lookup's verdict.

@@ -43,15 +43,19 @@ trait ImportStatus
     //   dismissed (null, or [user, at, reason] when the run's "Needs attention" was dismissed, in
     //   which case outcome is 'dismissed' - see importApplyDismissals), and fixed_by (null, or
     //   [run_id, logged, user] of the later import that saved the last field it left empty, in which
-    //   case outcome is 'fixed' - see importApplyLaterFixes)
-    // $filters accepts 'record' (one record's runs only) and 'limit' (how many runs, default 50).
+    //   case outcome is 'fixed') and replaced_by (null, or the later attempt that tried its empty fields
+    //   again without saving them all, in which case outcome is 'replaced' - see importApplyLaterFixes)
+    // $filters accepts 'record' (one record's runs only), 'run_id' (one run only) and 'limit' (how many
+    // runs, default 50). Both filters go into the query, so a record or run whose entries are older than
+    // the project's newest 1,000 log entries (e.g. after a bulk refresh) is still found.
     public function importRuns($projectId, $filters = [])
     {
         $limit = max(1, min(500, (int) ($filters['limit'] ?? 50)));
         $record = trim((string) ($filters['record'] ?? ''));
+        $runIdFilter = trim((string) ($filters['run_id'] ?? ''));
 
         $runs = [];
-        foreach ($this->importRunQuery($projectId, min($limit * 20, 1000)) as $row) {
+        foreach ($this->importRunQuery($projectId, min($limit * 20, 1000), $record, $runIdFilter) as $row) {
             if (strpos((string) ($row['message'] ?? ''), self::$importLogPrefix) !== 0) {
                 continue;
             }
@@ -120,13 +124,18 @@ trait ImportStatus
         return $this->importApplyDismissals($projectId, $this->importApplyLaterFixes($projectId, $runs));
     }
 
-    // Marks flagged runs whose problem a later import solved: every field the run left empty (see
-    // importRunEmptyFields) was saved by a later run at the same place - the same record and event,
-    // and for a field on a repeating instrument or in a repeating event, the same instance. Their
-    // outcome becomes 'fixed', so they stop counting as needing attention, and fixed_by names the run
-    // that saved the last of those fields. A field filled another way (typed in, say) doesn't count:
-    // the run stays flagged until it's retried or dismissed. $runs is newest first, as importRuns()
-    // builds it; any later run of a flagged one is newer, so it's among them too.
+    // Settles flagged runs that later imports have dealt with, so each failing import is flagged once,
+    // by its latest attempt:
+    //   'fixed'    - every field the run left empty (see importRunEmptyFields) was saved by a later run
+    //                at the same place: the same record and event, and for a field on a repeating
+    //                instrument or in a repeating event, the same instance. fixed_by names the run that
+    //                saved the last of them.
+    //   'replaced' - not all of them were saved, but a later run tried every one of them again (a retry
+    //                that failed too, a new survey submission), whoever ran it. That later run carries the
+    //                flag now; replaced_by names the latest of them. Shown as "Stale".
+    // A field filled another way (typed in, say) doesn't count: the run stays flagged until it's retried
+    // or dismissed. $runs is newest first, as importRuns() builds it; any later run of a flagged one is
+    // newer, so it's among them too.
     private function importApplyLaterFixes($projectId, array $runs)
     {
         $project = null;
@@ -142,36 +151,64 @@ trait ImportStatus
             return json_encode([(string) $run['record'], $eventId, $field,
                 $repeats ? max(1, (int) ($run['repeat_instance'] ?? 1)) : '*']);
         };
+        $who = fn(array $run) => ['run_id' => $run['run_id'], 'logged' => $run['logged'], 'user' => $run['user']];
 
-        $open = [];   // [run index => [place => true]]: what each flagged run is still waiting for
+        $unsaved = [];     // [run index => [place => true]]: fields each flagged run left empty, not saved since
+        $untried = [];     // [run index => [place => true]]: those not even tried again since
+        $retriedBy = [];   // [run index => the latest later run that tried one of its fields again]
         foreach (array_reverse(array_keys($runs)) as $i) {   // oldest first
             $run = $runs[$i];
-            $saved = $split($run['saved'] ?? '');
-            foreach ($run['request_logs'] ?? [] as $request) {
-                array_push($saved, ...$split($request['fields_saved'] ?? ''));
-            }
-            if (!empty($saved) && !empty($open)) {
-                $places = array_map(fn($field) => $place($run, $field), array_unique($saved));
-                foreach (array_keys($open) as $j) {
+            $runs[$i]['fixed_by'] = null;
+            $runs[$i]['replaced_by'] = null;
+
+            if (!empty($unsaved)) {
+                $saved = $split($run['saved'] ?? '');
+                $tried = $saved;
+                foreach ($run['request_logs'] ?? [] as $request) {
+                    array_push($saved, ...$split($request['fields_saved'] ?? ''));
+                    array_push($tried, ...$split($request['fields_requested'] ?? ''),
+                        ...$split($request['fields_saved'] ?? ''), ...$split($request['fields_not_populated'] ?? ''));
+                }
+                $tried = array_merge($tried, $this->importRunEmptyFields($run));
+                $savedPlaces = array_map(fn($field) => $place($run, $field), array_unique($saved));
+                $triedPlaces = array_map(fn($field) => $place($run, $field), array_unique($tried));
+
+                foreach (array_keys($unsaved) as $j) {
                     if ($runs[$j]['record'] !== $run['record']) {
                         continue;
                     }
-                    foreach ($places as $key) {
-                        unset($open[$j][$key]);
+                    $before = count($untried[$j]);
+                    foreach ($savedPlaces as $key) {
+                        unset($unsaved[$j][$key], $untried[$j][$key]);
                     }
-                    if (empty($open[$j])) {
+                    foreach ($triedPlaces as $key) {
+                        if (isset($unsaved[$j][$key])) {
+                            $retriedBy[$j] = $i;
+                        }
+                        unset($untried[$j][$key]);
+                    }
+                    if (empty($unsaved[$j])) {
                         $runs[$j]['outcome'] = 'fixed';
-                        $runs[$j]['fixed_by'] = ['run_id' => $run['run_id'], 'logged' => $run['logged'], 'user' => $run['user']];
-                        unset($open[$j]);
+                        $runs[$j]['fixed_by'] = $who($run);
+                        unset($unsaved[$j], $untried[$j], $retriedBy[$j]);
                     }
                 }
             }
-            $runs[$i]['fixed_by'] = $runs[$i]['fixed_by'] ?? null;
+
             if ($run['outcome'] === 'attention') {
-                $empty = $this->importRunEmptyFields($run);
+                $empty = array_map(fn($field) => $place($run, $field), $this->importRunEmptyFields($run));
                 if (!empty($empty)) {
-                    $open[$i] = array_fill_keys(array_map(fn($field) => $place($run, $field), $empty), true);
+                    $unsaved[$i] = array_fill_keys($empty, true);
+                    $untried[$i] = $unsaved[$i];
                 }
+            }
+        }
+
+        // What's still unsaved but has every field tried again since is now the later attempt's to show
+        foreach (array_keys($unsaved) as $j) {
+            if (empty($untried[$j]) && isset($retriedBy[$j])) {
+                $runs[$j]['outcome'] = 'replaced';
+                $runs[$j]['replaced_by'] = $who($runs[$retriedBy[$j]]);
             }
         }
 
@@ -187,20 +224,33 @@ trait ImportStatus
     // up first. queryLogs() was tried first, but its pseudo-query dialect proved fragile across
     // versions (no 'from', no '*', and columns coming back empty on 16.1.7), while these tables'
     // shapes are stable and already read directly by REDCap core.
-    private function importRunQuery($projectId, $cap)
+    // $record and $runId narrow the entries in the query itself (every entry of a run carries its record
+    // and run_id), so the cap applies to that record's or run's entries rather than the whole project's
+    private function importRunQuery($projectId, $cap, $record = '', $runId = '')
     {
         // The ids of the newest import entries, capped (the parameter join below turns one entry into
         // several rows, so the cap has to be applied to entries before joining)
+        $where = ' where l.project_id = ? and l.message like ?';
+        $parameters = [$this->getPrefix(), (int) $projectId, self::$importLogPrefix . '%'];
+        if ((string) $record !== '') {
+            $where .= ' and l.record = ?';
+            $parameters[] = (string) $record;
+        }
+        if ((string) $runId !== '') {
+            $where .= ' and exists (select 1 from redcap_external_modules_log_parameters rp'
+                . ' where rp.log_id = l.log_id and rp.name = ? and rp.value = ?)';
+            array_push($parameters, 'run_id', (string) $runId);
+        }
         $ids = [];
         foreach ($this->importQueryRows(
             'select l.log_id'
             . ' from redcap_external_modules_log l'
             . ' join redcap_external_modules m on m.external_module_id = l.external_module_id'
             . ' and m.directory_prefix = ?'
-            . ' where l.project_id = ? and l.message like ?'
+            . $where
             . ' order by l.log_id desc'
             . ' limit ' . (int) $cap,
-            [$this->getPrefix(), (int) $projectId, self::$importLogPrefix . '%']
+            $parameters
         ) as $row) {
             $id = (int) ($row['log_id'] ?? 0);
             if ($id > 0) {
@@ -343,10 +393,11 @@ trait ImportStatus
         return array_values($latest);
     }
 
-    // One logged run by its run_id, looked for among the project's most recent 500 runs, or null
+    // One logged run by its run_id, or null when it isn't in the log
     public function importRunFromLog($projectId, $runId)
     {
-        foreach ($this->importRuns($projectId, ['limit' => 500]) as $run) {
+        // Looked up by its run_id in the query, so a run older than the newest 500 is found too
+        foreach ($this->importRuns($projectId, ['run_id' => $runId, 'limit' => 1]) as $run) {
             if ($run['run_id'] === $runId) {
                 return $run;
             }
@@ -1044,12 +1095,15 @@ trait ImportStatus
     // button needs to see them.
     // $requestedBy is set when the retry is part of Retry all failed, run by the cron with nobody logged
     // in (see ImportRetryAll): the run is then described as requested by that user.
-    public function retryImportRun($projectId, array $run, $bypassCache = true, $requestedBy = null)
+    // $reimport: the run being re-run finished fine (OK, Fixed later, From stored data) and the user wants
+    // its fields fetched again anyway, e.g. after a source's data or uploaded table changed. It runs the
+    // same full plan as a retry and only logs differently.
+    public function retryImportRun($projectId, array $run, $bypassCache = true, $requestedBy = null, $reimport = false)
     {
         if ($requestedBy === null) {
             $user = $this->getUser();
             $username = $user ? $user->getUsername() : '?';
-            $description = "API import: manual retry by $username";
+            $description = $reimport ? "API import: manual re-import by $username" : "API import: manual retry by $username";
         } else {
             $username = '';
             $description = "API import: retry all failed, requested by $requestedBy";
@@ -1362,6 +1416,7 @@ trait ImportStatus
             'dismissed' => 'Dismissed',
             'stale' => 'From stored data',
             'fixed' => 'Fixed later',
+            'replaced' => 'Stale',
             default => 'OK',
         };
     }
